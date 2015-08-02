@@ -249,6 +249,7 @@ static int __send_requestvote(
 {
     raft_node_t* node = raft_get_node(raft, nodeidx);
     peer_connection_t* conn = raft_node_get_udata(node);
+
     //printf("send vote %d\n", conn->connected);
 
     if (0 == conn->connected)
@@ -312,7 +313,6 @@ static int __send_appendentries(
         };
 
         /* list of entries */
-        //tn = tpl_map("IB", &m->entries[0].id, &m->entries[0].data);//, m->n_entries);
         tn = tpl_map("IB", &m->entries[0].id, &tb);//, m->n_entries);
         size_t sz;
         tpl_pack(tn, 0);
@@ -352,12 +352,8 @@ static int __applylog(
     if (0 != e)
         mdb_fatal(e);
 
-    MDB_val key, val;
-
-    key.mv_data = (void*)data;
-    key.mv_size = len;
-    val.mv_data = "\0";
-    val.mv_size = 0;
+    MDB_val key = { .mv_size = len, .mv_data = (void*)data };
+    MDB_val val = { .mv_size = 0, .mv_data = "\0" };
 
     e = mdb_put(txn, sv->tickets, &key, &val, 0);
     switch (e)
@@ -423,16 +419,6 @@ static int __recv_msg(void *img, size_t sz, void *data)
             uv_fatal(e);
 
         conn->n_expected_entries = 0;
-
-#if 0
-        printf("%p\n", m.ae.entries);
-        printf("%d\n", m.ae.entries[0].id);
-        printf("%d %.*s\n",
-                m.ae.entries[0].id,
-                m.ae.entries[0].data.len,
-                m.ae.entries[0].data.buf);
-        tpl_free(tn);
-#endif
 
         return 0;
     }
@@ -529,8 +515,6 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
     if (nread < 0)
         uv_fatal(nread);
 
-    //printf("reading %d\n", nread);
-
     if (0 <= nread)
     {
         tpl_gather(TPL_GATHER_MEM, buf->base, nread, &conn->gt, __recv_msg,
@@ -590,13 +574,6 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
     e = uv_tcp_getpeername(tcp, (struct sockaddr*)&conn->addr, &namelen);
     if (0 != e)
         uv_fatal(e);
-
-#if 0
-    int ip_len = IPV4_STR_LEN;
-    char* ip = malloc(ip_len);
-    uv_ip4_name(&conn->addr, ip, ip_len);
-    printf("ip: %.*s:%d\n", ip_len, ip, ntohs(conn->addr.sin_port));
-#endif
 
     e = uv_read_start((uv_stream_t*)tcp, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
