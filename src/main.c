@@ -647,7 +647,7 @@ static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop)
     return 0;
 }
 
-void __raft_log(raft_server_t* raft, void *udata, const char *buf, ...)
+void __raft_log(raft_server_t* raft, void *udata, const char *buf)
 {
     printf("log: '%s'\n", buf);
 }
