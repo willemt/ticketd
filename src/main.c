@@ -301,11 +301,13 @@ static int __send_appendentries(
     tpl_node *tn = tpl_map("S(I$(IIIIII))", &msg);
     ptr += __peer_msg_pack(tn, bufs, ptr);
 
+//    printf("previous log index %d\n", m->prev_log_idx);
+
     if (0 < m->n_entries)
     {
         printf("sending ENTRIES %d\n", m->n_entries);
         if (m->entries[0].data.buf)
-            printf("%d\n", *(int*)m->entries[0].data.buf);
+            printf("BUF: %d\n", *(int*)m->entries[0].data.buf);
 
         tpl_bin tb = {
             .sz = m->entries[0].data.len,
@@ -355,6 +357,8 @@ static int __applylog(
     MDB_val key = { .mv_size = len, .mv_data = (void*)data };
     MDB_val val = { .mv_size = 0, .mv_data = "\0" };
 
+    printf("applying size:%d\n", len);
+
     e = mdb_put(txn, sv->tickets, &key, &val, 0);
     switch (e)
     {
@@ -393,14 +397,14 @@ static int __recv_msg(void *img, size_t sz, void *data)
 
     if (0 < conn->n_expected_entries)
     {
-        msg_entry_t me;
+        msg_entry_t entry;
         tpl_bin tb;
 
         printf("image: %s %d\n", tpl_peek(TPL_MEM, img, sz), (int)sz);
         printf("expecting entries: %d\n", conn->n_expected_entries);
 
-        //tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &me.id, &me.data);
-        tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &me.id, &tb);
+        //tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &entry.id, &entry.data);
+        tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &entry.id, &tb);
         tpl_load(tn, TPL_MEM, img, sz);
         tpl_unpack(tn, 0);
 
@@ -408,7 +412,10 @@ static int __recv_msg(void *img, size_t sz, void *data)
         if (tb.addr)
             printf("binary buffer %d\n", *(int*)tb.addr);
 
-        m.ae.entries = &me;
+        entry.data.buf = tb.addr;
+        entry.data.len = tb.sz;
+
+        m.ae.entries = &entry;
         msg_t msg = { .type = MSG_APPENDENTRIES_RESPONSE };
         e = raft_recv_appendentries(sv->raft, conn->node_idx, &m.ae, &msg.aer);
 
@@ -477,7 +484,7 @@ static int __recv_msg(void *img, size_t sz, void *data)
         e = raft_recv_requestvote_response(sv->raft, conn->node_idx, &m.rvr);
         break;
     case MSG_APPENDENTRIES:
-        //printf("AE term:%d %d\n", m.ae.term, m.ae.n_entries);
+        //printf("AE term:%d %d %d\n", m.ae.term, m.ae.n_entries, m.ae.prev_log_idx);
 
         if (0 < m.ae.n_entries)
             printf("n entries:%d \n", m.ae.n_entries);
@@ -513,16 +520,17 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
     peer_connection_t* conn = tcp->data;
 
     if (nread < 0)
-        uv_fatal(nread);
+        switch (nread) {
+            case UV__EOF:
+                break;
+            default:
+                uv_fatal(nread);
+        }
 
     if (0 <= nread)
     {
         tpl_gather(TPL_GATHER_MEM, buf->base, nread, &conn->gt, __recv_msg,
                    conn);
-    }
-    else
-    {
-
     }
 
 //    free(buf.base);
@@ -648,7 +656,7 @@ raft_cbs_t raft_funcs = {
     .send_requestvote            = __send_requestvote,
     .send_appendentries          = __send_appendentries,
     .applylog                    = __applylog,
-    .log                         = NULL,
+    .log                         = __raft_log,
 };
 
 static void __periodic(uv_timer_t* handle)
