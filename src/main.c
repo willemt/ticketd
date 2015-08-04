@@ -204,12 +204,6 @@ static int __dispatch(h2o_handler_t *self, h2o_req_t *req)
 
     msg_entry_response_t r;
 
-    printf("got ticket %d\n", ticket);
-    printf("receiving %d\n",
-        *(int*)&ticket);
-    printf("receiving %d\n",
-        *(int*)entry.data.buf);
-
     /* block until the entry is committed */
     uv_mutex_lock(&sv->raft_lock);
 
@@ -249,8 +243,6 @@ static int __send_requestvote(
 {
     raft_node_t* node = raft_get_node(raft, nodeidx);
     peer_connection_t* conn = raft_node_get_udata(node);
-
-    //printf("send vote %d\n", conn->connected);
 
     if (0 == conn->connected)
         return 0;
@@ -301,8 +293,6 @@ static int __send_appendentries(
     tpl_node *tn = tpl_map("S(I$(IIIIII))", &msg);
     ptr += __peer_msg_pack(tn, bufs, ptr);
 
-//    printf("previous log index %d\n", m->prev_log_idx);
-
     if (0 < m->n_entries)
     {
         printf("sending ENTRIES %d\n", m->n_entries);
@@ -323,7 +313,6 @@ static int __send_appendentries(
         assert(0 == e);
         bufs[1].len = sz;
         bufs[1].base = ptr;
-        printf("%d %d\n", (int)bufs[0].len, (int)bufs[1].len);
 
         e = uv_write(&conn->write, conn->stream, bufs, 2, __write_cb);
         if (-1 == e)
@@ -357,8 +346,6 @@ static int __applylog(
     MDB_val key = { .mv_size = len, .mv_data = (void*)data };
     MDB_val val = { .mv_size = 0, .mv_data = "\0" };
 
-    printf("applying size:%d\n", len);
-
     e = mdb_put(txn, sv->tickets, &key, &val, 0);
     switch (e)
     {
@@ -386,6 +373,32 @@ static void __peer_alloc_cb(uv_handle_t* handle, size_t size, uv_buf_t* buf)
     buf->base = malloc(size);
 }
 
+static void __handle_appendentries(peer_connection_t* conn, void *img, size_t sz)
+{
+    uv_buf_t bufs[1];
+    char buf[RV_BUFLEN], *ptr = buf;
+    msg_t m;
+    msg_entry_t entry;
+    tpl_bin tb;
+    tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &entry.id, &tb);
+    tpl_load(tn, TPL_MEM, img, sz);
+    tpl_unpack(tn, 0);
+    entry.data.buf = tb.addr;
+    entry.data.len = tb.sz;
+    m.ae.entries = &entry;
+    msg_t msg = { .type = MSG_APPENDENTRIES_RESPONSE };
+    int e = raft_recv_appendentries(sv->raft, conn->node_idx, &m.ae, &msg.aer);
+
+    /* send response */
+    tn = tpl_map("S(I$(IIII))", &msg);
+    ptr += __peer_msg_pack(tn, &bufs[0], ptr);
+    e = uv_write(&conn->write, conn->stream, bufs, 1, __write_cb);
+    if (-1 == e)
+        uv_fatal(e);
+
+    conn->n_expected_entries = 0;
+}
+
 static int __recv_msg(void *img, size_t sz, void *data)
 {
     peer_connection_t* conn = data;
@@ -395,38 +408,10 @@ static int __recv_msg(void *img, size_t sz, void *data)
     uv_buf_t bufs[1];
     char buf[RV_BUFLEN], *ptr = buf;
 
+    /* handle the individual entries from appendentries */
     if (0 < conn->n_expected_entries)
     {
-        msg_entry_t entry;
-        tpl_bin tb;
-
-        printf("image: %s %d\n", tpl_peek(TPL_MEM, img, sz), (int)sz);
-        printf("expecting entries: %d\n", conn->n_expected_entries);
-
-        //tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &entry.id, &entry.data);
-        tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &entry.id, &tb);
-        tpl_load(tn, TPL_MEM, img, sz);
-        tpl_unpack(tn, 0);
-
-        //printf("binary buffer of length %d at address %p\n", tb.sz, tb.addr);
-        if (tb.addr)
-            printf("binary buffer %d\n", *(int*)tb.addr);
-
-        entry.data.buf = tb.addr;
-        entry.data.len = tb.sz;
-
-        m.ae.entries = &entry;
-        msg_t msg = { .type = MSG_APPENDENTRIES_RESPONSE };
-        e = raft_recv_appendentries(sv->raft, conn->node_idx, &m.ae, &msg.aer);
-
-        tn = tpl_map("S(I$(IIII))", &msg);
-        ptr += __peer_msg_pack(tn, &bufs[0], ptr);
-        e = uv_write(&conn->write, conn->stream, bufs, 1, __write_cb);
-        if (-1 == e)
-            uv_fatal(e);
-
-        conn->n_expected_entries = 0;
-
+        __handle_appendentries(conn, img, sz);
         return 0;
     }
 
@@ -435,16 +420,10 @@ static int __recv_msg(void *img, size_t sz, void *data)
     tpl_load(tn, TPL_MEM, img, sz);
     tpl_unpack(tn, 0);
 
-    //printf("msg = %d\n", m.type);
-    //printf("zzconn->node_idx = %d\n", conn->node_idx);
-
     /* decide what to do with message */
-
     switch (m.type)
     {
     case MSG_HANDSHAKE:
-        printf("HS HTTP: %d PEER: %d\n", m.hs.http_port, m.hs.peer_port);
-
         assert(0 == conn->connected);
 
         int i;
@@ -467,8 +446,6 @@ static int __recv_msg(void *img, size_t sz, void *data)
         break;
     case MSG_REQUESTVOTE:
     {
-        printf("RV term:%d \n", m.rv.term);
-
         msg_t msg = { .type = MSG_REQUESTVOTE_RESPONSE };
         e = raft_recv_requestvote(sv->raft, conn->node_idx, &m.rv, &msg.rvr);
 
@@ -480,18 +457,14 @@ static int __recv_msg(void *img, size_t sz, void *data)
     }
     break;
     case MSG_REQUESTVOTE_RESPONSE:
-        printf("RVR term:%d %d\n", m.rvr.term, m.rvr.vote_granted);
         e = raft_recv_requestvote_response(sv->raft, conn->node_idx, &m.rvr);
         break;
     case MSG_APPENDENTRIES:
         //printf("AE term:%d %d %d\n", m.ae.term, m.ae.n_entries, m.ae.prev_log_idx);
 
         if (0 < m.ae.n_entries)
-            printf("n entries:%d \n", m.ae.n_entries);
-        conn->n_expected_entries = m.ae.n_entries;
-
-        if (0 < conn->n_expected_entries)
         {
+            conn->n_expected_entries = m.ae.n_entries;
             memcpy(&conn->aer, &m, sizeof(msg_t));
             return 0;
         }
@@ -505,7 +478,6 @@ static int __recv_msg(void *img, size_t sz, void *data)
             uv_fatal(e);
         break;
     case MSG_APPENDENTRIES_RESPONSE:
-        //printf("AER term:%d \n", m.aer.term);
         e = raft_recv_appendentries_response(sv->raft, conn->node_idx, &m.aer);
         break;
     default:
