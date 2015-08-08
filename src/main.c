@@ -26,7 +26,7 @@
 #define MAX_PEER_CONNECTIONS 100
 #define IPV4_STR_LEN 3 * 4 + 3 + 1
 #define PERIOD_MSEC 500
-#define RV_BUFLEN 512
+#define RAFT_BUFLEN 512
 
 typedef enum
 {
@@ -115,7 +115,7 @@ static size_t __peer_msg_serialize(tpl_node *tn, uv_buf_t *buf, char* data)
     size_t sz;
     tpl_pack(tn, 0);
     tpl_dump(tn, TPL_GETSIZE, &sz);
-    tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, data, RV_BUFLEN);
+    tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, data, RAFT_BUFLEN);
     tpl_free(tn);
     buf->len = sz;
     buf->base = data;
@@ -255,7 +255,7 @@ static int __send_requestvote(
         return 0;
 
     uv_buf_t bufs[1];
-    char buf[RV_BUFLEN];
+    char buf[RAFT_BUFLEN];
     msg_t msg = {
         .type              = MSG_REQUESTVOTE,
         .rv                = *m
@@ -284,7 +284,7 @@ static int __send_appendentries(
 
     int e;
 
-    char buf[RV_BUFLEN], *ptr = buf;
+    char buf[RAFT_BUFLEN], *ptr = buf;
     msg_t msg = {
         .type              = MSG_APPENDENTRIES,
         .ae                = {
@@ -311,7 +311,7 @@ static int __send_appendentries(
         size_t sz;
         tpl_pack(tn, 0);
         tpl_dump(tn, TPL_GETSIZE, &sz);
-        e = tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, ptr, RV_BUFLEN);
+        e = tpl_dump(tn, TPL_MEM | TPL_PREALLOCD, ptr, RAFT_BUFLEN);
         assert(0 == e);
         bufs[1].len = sz;
         bufs[1].base = ptr;
@@ -397,7 +397,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     int e;
 
     uv_buf_t bufs[1];
-    char buf[RV_BUFLEN], *ptr = buf;
+    char buf[RAFT_BUFLEN], *ptr = buf;
 
     /* special case: handle appendentries payload */
     if (0 < conn->n_expected_entries)
@@ -412,7 +412,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         /* send response */
         uv_buf_t bufs[1];
-        char buf[RV_BUFLEN], *ptr = buf;
+        char buf[RAFT_BUFLEN], *ptr = buf;
         ptr += __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, ptr);
         e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
         if (-1 == e)
@@ -573,7 +573,7 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
 
     /* send handshake */
     uv_buf_t bufs[1];
-    char buf[RV_BUFLEN];
+    char buf[RAFT_BUFLEN];
     msg_t msg;
     msg.type = MSG_HANDSHAKE;
     msg.hs.peer_port = atoi(opts.peer_port);
