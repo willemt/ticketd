@@ -52,13 +52,11 @@ def build(bld):
         src/main.c
         """.split() + bld.clib_c_files(clibs),
         includes=['./include'] + bld.clib_h_paths(clibs) + h2o_includes + uv_includes + nm_includes,
-        target='kippud',
+        target='ticketd',
         stlibpath=['.'],
         libpath=[os.getcwd()],
         lib=['uv', 'h2o', 'ssl', 'crypto', 'nanomsg'],
         cflags=[
-            #'-Werror',
-            #'-Werror=format',
             '-Werror=int-to-pointer-cast',
             '-g',
             platform,
@@ -68,5 +66,4 @@ def build(bld):
             '-Werror=return-type',
             '-Werror=uninitialized',
             '-Werror=pointer-to-int-cast',
-            #'-Wcast-align',
             ])
