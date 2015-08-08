@@ -37,6 +37,9 @@ typedef enum
     MSG_APPENDENTRIES_RESPONSE,
 } peer_message_type_e;
 
+/**
+ * Peer protocol:
+ * Send handshake after connecting so that we can identify the peer */
 typedef struct
 {
     int peer_port;
