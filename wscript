@@ -23,8 +23,6 @@ def build(bld):
         platform = ''
 
     clibs = """
-        bitstream
-        container_of
         h2o_helpers
         lmdb
         lmdb_helpers
