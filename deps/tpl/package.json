@@ -1,0 +1,9 @@
+{
+  "name": "tpl",
+  "version": "0.0.1",
+  "repo": "clibs/tpl",
+  "description": "Serialization",
+  "keywords": [],
+  "license": "BSD",
+  "src": ["tpl.c", "tpl.h"]
+}

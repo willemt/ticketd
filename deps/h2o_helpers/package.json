@@ -1,0 +1,9 @@
+{
+  "name": "h2o_helpers",
+  "version": "0.0.1",
+  "repo": "willemt/h2o_helpers",
+  "description": "Additional functions that make working with h2o easier",
+  "keywords": [],
+  "license": "public domain",
+  "src": ["h2o_helpers.c", "h2o_helpers.h"]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "lmdb_helpers",
+  "version": "0.0.1",
+  "repo": "willemt/lmdb_helpers",
+  "description": "Helpful auxiliary functions for working with LMDB",
+  "keywords": ["lmdb"],
+  "license": "BSD",
+  "src": ["src/lmdb_helpers.c", "include/lmdb_helpers.h"],
+  "dependencies": {
+  }
+}

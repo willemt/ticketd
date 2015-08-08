@@ -15,7 +15,6 @@
 #include "lmdb_helpers.h"
 #include "raft.h"
 #include "uv_helpers.h"
-#include "bitstream.h"
 #include "tpl.h"
 
 #include "usage.c"
