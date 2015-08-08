@@ -18,7 +18,7 @@
 #include "tpl.h"
 
 #include "usage.c"
-#include "addr.c"
+#include "parse_addr.c"
 
 #define VERSION "0.1.0"
 #define ANYPORT 65535
