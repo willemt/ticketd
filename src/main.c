@@ -60,6 +60,12 @@ typedef struct
     int padding[100];
 } msg_t;
 
+typedef enum {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+} conn_status_e; 
+
 typedef struct
 {
     /* peer's address */
@@ -68,8 +74,7 @@ typedef struct
     /* gather TPL message */
     tpl_gather_t *gt;
 
-    /* 1 if connected; 0 otherwise */
-    int connected;
+    conn_status_e connection_status;
 
     /* peer's raft node_idx */
     int node_idx;
@@ -250,11 +255,22 @@ static void __peer_write_cb(uv_write_t *req, int status)
         case 0:
             break;
         case UV__EPIPE:
-            conn->connected = 0;
+            conn->connection_status = DISCONNECTED;
             break;
         default:
             uv_fatal(status);
     }
+}
+
+static int __connect_if_needed(peer_connection_t* conn)
+{
+    if (CONNECTED != conn->connection_status)
+    {
+        if (DISCONNECTED == conn->connection_status)
+            __connect_to_peer(conn, conn->loop);
+        return -1;
+    }
+    return 0;
 }
 
 static int __send_requestvote(
@@ -267,7 +283,8 @@ static int __send_requestvote(
     raft_node_t* node = raft_get_node(raft, nodeidx);
     peer_connection_t* conn = raft_node_get_udata(node);
 
-    if (0 == conn->connected)
+    int e = __connect_if_needed(conn);
+    if (-1 == e)
         return 0;
 
     uv_buf_t bufs[1];
@@ -278,7 +295,7 @@ static int __send_requestvote(
     };
     __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, buf);
     conn->write.data = conn;
-    int e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
+    e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
     if (-1 == e)
         uv_fatal(e);
     return 0;
@@ -296,13 +313,9 @@ static int __send_appendentries(
     raft_node_t* node = raft_get_node(raft, nodeidx);
     peer_connection_t* conn = raft_node_get_udata(node);
 
-    if (0 == conn->connected)
-    {
-        __connect_to_peer(conn, conn->loop);
+    int e = __connect_if_needed(conn);
+    if (-1 == e)
         return 0;
-    }
-
-    int e;
 
     char buf[RAFT_BUFLEN], *ptr = buf;
     msg_t msg = {
@@ -451,8 +464,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     switch (m.type)
     {
     case MSG_HANDSHAKE:
-        assert(0 == conn->connected);
-
+        {
         int i;
 
         /* find raft peer for this connection */
@@ -464,12 +476,14 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
                 other_conn->addr.sin_addr.s_addr &&
                 m.hs.peer_port == ntohs(other_conn->addr.sin_port))
             {
+                conn->connection_status = CONNECTED;
+                conn->node_idx = i;
+                conn->addr.sin_port = other_conn->addr.sin_port;
                 raft_node_set_udata(node, conn);
                 free(other_conn);
-                conn->connected = 1;
-                conn->node_idx = i;
                 return 0;
             }
+        }
         }
         break;
     case MSG_REQUESTVOTE:
@@ -526,7 +540,7 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
         switch (nread) {
             case UV__ECONNRESET:
             case UV__EOF:
-                conn->connected = 0;
+                conn->connection_status = DISCONNECTED;
                 return;
             default:
                 uv_fatal(nread);
@@ -560,6 +574,7 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
         uv_fatal(e);
 
     peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
+    conn->node_idx = -1;
     conn->loop = listener->loop;
     conn->stream = (uv_stream_t*)tcp;
     tcp->data = conn;
@@ -585,7 +600,6 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
     switch (status)
     {
     case 0:
-        conn->connected = 1;
         break;
     case -ECONNREFUSED:
         return;
@@ -606,6 +620,7 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
         uv_fatal(e);
 
     /* start reading from peer */
+    conn->connection_status = CONNECTED;
     req->handle->data = req->data;
     e = uv_read_start(req->handle, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
@@ -620,6 +635,7 @@ static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop)
 
     conn->stream = malloc(sizeof(uv_tcp_t));
     conn->stream->data = conn;
+    conn->connection_status = CONNECTING;
     e = uv_tcp_init(loop, (uv_tcp_t*)conn->stream);
     if (0 != e)
         uv_fatal(e);
