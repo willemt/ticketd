@@ -483,6 +483,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
                 conn->addr.sin_port = other_conn->addr.sin_port;
                 raft_node_set_udata(node, conn);
                 free(other_conn);
+                // TODO: free libuv resources
                 return 0;
             }
         }
