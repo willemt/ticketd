@@ -30,6 +30,8 @@
 
 typedef enum
 {
+    /** If we are a peer that is attemping a connection need to send a handshake
+     * This is because we need to identify ourselves */
     MSG_HANDSHAKE,
     MSG_REQUESTVOTE,
     MSG_REQUESTVOTE_RESPONSE,
@@ -551,8 +553,6 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
         tpl_gather(TPL_GATHER_MEM, buf->base, nread, &conn->gt,
                 __deserialize_and_handle_msg, conn);
     }
-
-    // TODO: connection failure
 }
 
 /**
