@@ -517,8 +517,10 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
 
     if (nread < 0)
         switch (nread) {
+            case UV__ECONNRESET:
             case UV__EOF:
-                break;
+                conn->connected = 0;
+                return;
             default:
                 uv_fatal(nread);
         }
