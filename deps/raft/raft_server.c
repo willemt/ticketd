@@ -117,7 +117,6 @@ void raft_become_candidate(raft_server_t* me_)
     for (i = 0; i < me->num_nodes; i++)
         if (me->nodeid != i)
             raft_send_requestvote(me_, i);
-
 }
 
 void raft_become_follower(raft_server_t* me_)
@@ -170,7 +169,8 @@ int raft_recv_appendentries_response(raft_server_t* me_,
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    __log(me_, "received appendentries response from: %d success: %d", node, r->success);
+    __log(me_, "received appendentries response node: %d %s cidx: %d 1stidx: %d",
+            node, r->success == 1 ? "success" : "fail", r->current_idx, r->first_idx);
 
     raft_node_t* p = raft_get_node(me_, node);
 
@@ -475,8 +475,6 @@ void raft_send_appendentries(raft_server_t* me_, int node)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
 
-    __log(me_, "sending appendentries to: %d", node);
-
     if (!(me->cb.send_appendentries))
         return;
 
@@ -515,6 +513,14 @@ void raft_send_appendentries(raft_server_t* me_, int node)
             }
         }
     }
+
+    if (0 < ae.n_entries)
+        __log(me_, "sending appendentries node: %d, %d %d %d %d",
+                node,
+                ae.term,
+                ae.leader_commit,
+                ae.prev_log_idx,
+                ae.prev_log_term);
 
     me->cb.send_appendentries(me_, me->udata, node, &ae);
 }

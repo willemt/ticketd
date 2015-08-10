@@ -86,6 +86,8 @@ typedef struct
     uv_stream_t* stream;
 
     uv_write_t write;
+
+    uv_loop_t* loop;
 } peer_connection_t;
 
 typedef struct
@@ -109,6 +111,8 @@ typedef struct
 options_t opts;
 server_t server;
 server_t *sv = &server;
+
+static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop);
 
 /**
  * @param[out] bufs libuv buffer to insert serialized message into
@@ -293,7 +297,10 @@ static int __send_appendentries(
     peer_connection_t* conn = raft_node_get_udata(node);
 
     if (0 == conn->connected)
+    {
+        __connect_to_peer(conn, conn->loop);
         return 0;
+    }
 
     int e;
 
@@ -553,6 +560,7 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
         uv_fatal(e);
 
     peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
+    conn->loop = listener->loop;
     conn->stream = (uv_stream_t*)tcp;
     tcp->data = conn;
 
@@ -580,7 +588,6 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
         conn->connected = 1;
         break;
     case -ECONNREFUSED:
-        printf("Connection FAILED, will try again\n");
         return;
     default:
         uv_fatal(status);
@@ -673,6 +680,8 @@ int main(int argc, char **argv)
     sv->raft = raft_new();
     raft_set_callbacks(sv->raft, &raft_funcs, sv);
 
+    srand(time(NULL));
+
     // TODO: load commits
     // TODO: load voted for
     // TODO: load term
@@ -689,6 +698,7 @@ int main(int argc, char **argv)
 
         peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
         conn->node_idx = node_idx;
+        conn->loop = &loop;
         e = uv_ip4_addr(res.host, atoi(res.port), &conn->addr);
         if (0 != e)
             uv_fatal(e);
@@ -700,7 +710,7 @@ int main(int argc, char **argv)
         if (peer_is_self)
             sv->node_idx = node_idx;
         else
-            __connect_to_peer(conn, &loop);
+            __connect_to_peer(conn, conn->loop);
 
         raft_add_peer(sv->raft, conn, peer_is_self);
         node_idx++;
@@ -746,7 +756,8 @@ int main(int argc, char **argv)
     periodic_req = malloc(sizeof(uv_timer_t));
     periodic_req->data = sv;
     uv_timer_init(&loop, periodic_req);
-    uv_timer_start(periodic_req, __periodic, 0, 500);
+    uv_timer_start(periodic_req, __periodic, 0, 1000);
+    raft_set_election_timeout(sv->raft, 1000);
 
     e = uv_run(&loop, UV_RUN_DEFAULT);
     if (0 != e)
