@@ -240,8 +240,17 @@ static void __on_http_connection(uv_stream_t *listener, const int status)
 
 static void __peer_write_cb(uv_write_t *req, int status)
 {
-    if (0 != status)
-        uv_fatal(status);
+    peer_connection_t* conn = req->data;
+
+    switch (status) {
+        case 0:
+            break;
+        case UV__EPIPE:
+            conn->connected = 0;
+            break;
+        default:
+            uv_fatal(status);
+    }
 }
 
 static int __send_requestvote(
@@ -264,6 +273,7 @@ static int __send_requestvote(
         .rv                = *m
     };
     __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, buf);
+    conn->write.data = conn;
     int e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
     if (-1 == e)
         uv_fatal(e);
