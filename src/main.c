@@ -27,6 +27,7 @@
 #define IPV4_STR_LEN 3 * 4 + 3 + 1
 #define PERIOD_MSEC 500
 #define RAFT_BUFLEN 512
+#define LEADER_URL_LEN 512
 
 typedef enum
 {
@@ -73,6 +74,8 @@ typedef struct
     /* peer's address */
     struct sockaddr_in addr;
 
+    int http_port;
+
     /* gather TPL message */
     tpl_gather_t *gt;
 
@@ -108,8 +111,6 @@ typedef struct
     MDB_dbi tickets;
 
     MDB_env *db_env;
-
-    uv_mutex_t raft_lock;
 
     h2o_globalconf_t cfg;
     h2o_context_t ctx;
@@ -193,6 +194,30 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
     if (!h2o_memis(req->method.base, req->method.len, H2O_STRLIT("POST")))
         return -1;
 
+    /* redirect to leader if needed */
+    int leader = raft_get_current_leader(sv->raft);
+    if (leader != sv->node_idx)
+    {
+        raft_node_t* node = raft_get_node(sv->raft, leader);
+        peer_connection_t* conn = raft_node_get_udata(node);
+        char leader_url[LEADER_URL_LEN];
+
+        static h2o_generator_t generator = { NULL, NULL };
+        static h2o_iovec_t body = { .base = "", .len = 0 };
+        req->res.status = 301;
+        req->res.reason = "Moved Permanently";
+        h2o_start_response(req, &generator);
+        snprintf(leader_url, LEADER_URL_LEN, "http://%s:%d/",
+                inet_ntoa(conn->addr.sin_addr), conn->http_port);
+        h2o_add_header(&req->pool,
+                       &req->res.headers,
+                       H2O_TOKEN_LOCATION,
+                       leader_url,
+                       strlen(leader_url));
+        h2o_send(req, &body, 1, 1);
+        return 0;
+    }
+
     int e;
 
     unsigned int ticket = __generate_ticket();
@@ -202,13 +227,9 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
     entry.data.buf = (void*)&ticket;
     entry.data.len = sizeof(ticket);
 
-    msg_entry_response_t r;
-
     /* block until the entry is committed */
-    uv_mutex_lock(&sv->raft_lock);
+    msg_entry_response_t r;
     e = raft_recv_entry(sv->raft, sv->node_idx, &entry, &r);
-    uv_mutex_unlock(&sv->raft_lock);
-    /* TODO: proxy message to leader if we aren't leader */
     if (0 != e)
         return h2oh_respond_with_error(req, 500, "BAD");
 
@@ -478,11 +499,15 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
                 other_conn->addr.sin_addr.s_addr &&
                 m.hs.peer_port == ntohs(other_conn->addr.sin_port))
             {
+                conn->http_port = m.hs.http_port;
                 conn->connection_status = CONNECTED;
                 conn->node_idx = i;
                 conn->addr.sin_port = other_conn->addr.sin_port;
-                raft_node_set_udata(node, conn);
-                free(other_conn);
+                if (conn != other_conn)
+                {
+                    raft_node_set_udata(node, conn);
+                    free(other_conn);
+                }
                 // TODO: free libuv resources
                 return 0;
             }
@@ -556,6 +581,20 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
     }
 }
 
+static void __send_handshake(peer_connection_t* conn)
+{
+    uv_buf_t bufs[1];
+    char buf[RAFT_BUFLEN];
+    msg_t msg;
+    msg.type = MSG_HANDSHAKE;
+    msg.hs.peer_port = atoi(opts.peer_port);
+    msg.hs.http_port = atoi(opts.http_port);
+    __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, buf);
+    int e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
+    if (-1 == e)
+        uv_fatal(e);
+}
+
 /**
  * Raft peer has connected to us */
 static void __on_peer_connection(uv_stream_t *listener, const int status)
@@ -585,6 +624,8 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
     if (0 != e)
         uv_fatal(e);
 
+    __send_handshake(conn);
+
     e = uv_read_start((uv_stream_t*)tcp, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
         uv_fatal(e);
@@ -608,17 +649,7 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
         uv_fatal(status);
     }
 
-    /* send handshake */
-    uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN];
-    msg_t msg;
-    msg.type = MSG_HANDSHAKE;
-    msg.hs.peer_port = atoi(opts.peer_port);
-    msg.hs.http_port = atoi(opts.http_port);
-    __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, buf);
-    e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
-    if (-1 == e)
-        uv_fatal(e);
+    __send_handshake(conn);
 
     /* start reading from peer */
     conn->connection_status = CONNECTED;
@@ -691,8 +722,6 @@ int main(int argc, char **argv)
 
     uv_loop_t loop;
     uv_loop_init(&loop);
-
-    uv_mutex_init(&sv->raft_lock);
 
     sv->raft = raft_new();
     raft_set_callbacks(sv->raft, &raft_funcs, sv);
