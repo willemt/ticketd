@@ -18,7 +18,6 @@ Warning
 
 Among the many memory leaks, three key raft related features are still in-progress:
 
-* Leader entry re-routing
 * Saving persistent state
 * Dynamic membership changes
 
