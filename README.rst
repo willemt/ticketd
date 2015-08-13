@@ -41,18 +41,21 @@ Starting
 Node A:
 
 .. code-block:: bash
+   :class: ignore
 
    ticketd 127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003 --peer_port 9001 --http_port 8001
 
 Node B:
 
 .. code-block:: bash
+   :class: ignore
 
    ticketd 127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003 --peer_port 9002 --http_port 8002
 
 Node C:
 
 .. code-block:: bash
+   :class: ignore
 
    ticketd 127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003 --peer_port 9003 --http_port 8003
 
@@ -73,6 +76,34 @@ Obtain a unique identifier via HTTP POST
    transfer-encoding: chunked
 
    823378840
+
+Leader Redirection
+------------------
+
+If we try to obtain an identifier from a non-leader, then ticketd will respond with a 301 redirect reponse. The redirect shows the location of the current leader.
+
+Forcing the client to redirect to the leader means that future requests will be faster (ie. no delays are caused by proxying the request).
+
+.. code-block:: bash
+
+   curl --request POST -i -L 127.0.0.1:8003
+
+.. code-block:: http
+   :class: dotted
+
+   HTTP/1.1 301 Moved Permanently
+   Date: Thu, 13 Aug 2015 16:03:02 GMT
+   Server: h2o/1.3.1
+   Connection: close
+   location: http://127.0.0.1:8001/
+
+   HTTP/1.1 200 OK
+   Date: Thu, 13 Aug 2015 16:03:02 GMT
+   Server: h2o/1.3.1
+   Connection: keep-alive
+   transfer-encoding: chunked
+
+   1272863780
 
 Building
 ========
