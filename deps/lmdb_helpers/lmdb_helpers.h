@@ -19,4 +19,6 @@ void mdb_print_db_stats(MDB_dbi dbi, MDB_env *env);
 
 size_t mdb_env_get_mapsize(MDB_env *env);
 
+void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val);
+
 #endif /* LMDB_HELPERS_H */

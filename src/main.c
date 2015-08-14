@@ -63,11 +63,12 @@ typedef struct
     int padding[100];
 } msg_t;
 
-typedef enum {
+typedef enum
+{
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
-} conn_status_e; 
+} conn_status_e;
 
 typedef struct
 {
@@ -88,7 +89,7 @@ typedef struct
      * this counts down as we consume entries */
     int n_expected_entries;
 
-    /* remember most recent append entries msg, we refer to this msg when we 
+    /* remember most recent append entries msg, we refer to this msg when we
      * finish reading the log entries
      * used by n_expected_entries */
     msg_t ae;
@@ -109,6 +110,9 @@ typedef struct
 
     /* set of tickets that have been issued */
     MDB_dbi tickets;
+
+    /* persistent state for voted_for and term */
+    MDB_dbi state;
 
     MDB_env *db_env;
 
@@ -208,7 +212,7 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
         req->res.reason = "Moved Permanently";
         h2o_start_response(req, &generator);
         snprintf(leader_url, LEADER_URL_LEN, "http://%s:%d/",
-                inet_ntoa(conn->addr.sin_addr), conn->http_port);
+                 inet_ntoa(conn->addr.sin_addr), conn->http_port);
         h2o_add_header(&req->pool,
                        &req->res.headers,
                        H2O_TOKEN_LOCATION,
@@ -274,14 +278,15 @@ static void __peer_write_cb(uv_write_t *req, int status)
 {
     peer_connection_t* conn = req->data;
 
-    switch (status) {
-        case 0:
-            break;
-        case UV__EPIPE:
-            conn->connection_status = DISCONNECTED;
-            break;
-        default:
-            uv_fatal(status);
+    switch (status)
+    {
+    case 0:
+        break;
+    case UV__EPIPE:
+        conn->connection_status = DISCONNECTED;
+        break;
+    default:
+        uv_fatal(status);
     }
 }
 
@@ -358,12 +363,12 @@ static int __send_appendentries(
     if (0 < m->n_entries)
     {
         tpl_bin tb = {
-            .sz = m->entries[0].data.len,
+            .sz   = m->entries[0].data.len,
             .addr = m->entries[0].data.buf
         };
 
         /* list of entries */
-        tpl_node *tn = tpl_map("IB", &m->entries[0].id, &tb);//, m->n_entries);
+        tpl_node *tn = tpl_map("IB", &m->entries[0].id, &tb); //, m->n_entries);
         size_t sz;
         tpl_pack(tn, 0);
         tpl_dump(tn, TPL_GETSIZE, &sz);
@@ -426,13 +431,79 @@ static int __applylog(
     return 0;
 }
 
+static int __persist_term(
+    raft_server_t* raft,
+    void *udata,
+    const int current_term
+    )
+{
+    MDB_txn *txn;
+
+    int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    int term = current_term;
+    MDB_val key = { .mv_size = strlen("term"), .mv_data = "term" };
+    MDB_val val = { .mv_size = sizeof(int), .mv_data = &term };
+
+    e = mdb_put(txn, sv->state, &key, &val, 0);
+    switch (e)
+    {
+    case 0:
+        break;
+    default:
+        mdb_fatal(e);
+    }
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    return 0;
+}
+
+static int __persist_vote(
+    raft_server_t* raft,
+    void *udata,
+    const int voted_for
+    )
+{
+    MDB_txn *txn;
+
+    int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    int vote = voted_for;
+    MDB_val key = { .mv_size = strlen("voted_for"), .mv_data = "voted_for" };
+    MDB_val val = { .mv_size = sizeof(int), .mv_data = &vote };
+
+    e = mdb_put(txn, sv->state, &key, &val, 0);
+    switch (e)
+    {
+    case 0:
+        break;
+    default:
+        mdb_fatal(e);
+    }
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    return 0;
+}
+
 static void __peer_alloc_cb(uv_handle_t* handle, size_t size, uv_buf_t* buf)
 {
     buf->len = size;
     buf->base = malloc(size);
 }
 
-static void __deserialize_appendentries_payload(msg_entry_t* out, peer_connection_t* conn, void *img, size_t sz)
+static void __deserialize_appendentries_payload(msg_entry_t* out,
+                                                peer_connection_t* conn,
+                                                void *img, size_t sz)
 {
     tpl_bin tb;
 
@@ -464,7 +535,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         conn->ae.ae.entries = &entry;
         msg_t msg = { .type = MSG_APPENDENTRIES_RESPONSE };
-        int e = raft_recv_appendentries(sv->raft, conn->node_idx, &conn->ae.ae, &msg.aer);
+        int e = raft_recv_appendentries(sv->raft, conn->node_idx, &conn->ae.ae,
+                                        &msg.aer);
 
         /* send response */
         uv_buf_t bufs[1];
@@ -487,7 +559,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     switch (m.type)
     {
     case MSG_HANDSHAKE:
-        {
+    {
         int i;
 
         /* find raft peer for this connection */
@@ -512,8 +584,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
                 return 0;
             }
         }
-        }
-        break;
+    }
+    break;
     case MSG_REQUESTVOTE:
     {
         msg_t msg = { .type = MSG_REQUESTVOTE_RESPONSE };
@@ -565,19 +637,20 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
     peer_connection_t* conn = tcp->data;
 
     if (nread < 0)
-        switch (nread) {
-            case UV__ECONNRESET:
-            case UV__EOF:
-                conn->connection_status = DISCONNECTED;
-                return;
-            default:
-                uv_fatal(nread);
+        switch (nread)
+        {
+        case UV__ECONNRESET:
+        case UV__EOF:
+            conn->connection_status = DISCONNECTED;
+            return;
+        default:
+            uv_fatal(nread);
         }
 
     if (0 <= nread)
     {
         tpl_gather(TPL_GATHER_MEM, buf->base, nread, &conn->gt,
-                __deserialize_and_handle_msg, conn);
+                   __deserialize_and_handle_msg, conn);
     }
 }
 
@@ -692,12 +765,27 @@ raft_cbs_t raft_funcs = {
     .send_requestvote            = __send_requestvote,
     .send_appendentries          = __send_appendentries,
     .applylog                    = __applylog,
+    .persist_vote                = __persist_vote,
+    .persist_term                = __persist_term,
     .log                         = __raft_log,
 };
 
 static void __periodic(uv_timer_t* handle)
 {
     raft_periodic(sv->raft, PERIOD_MSEC);
+}
+
+static void __load_persistent_state()
+{
+    MDB_val val;
+
+    mdb_gets(sv->db_env, sv->state, "voted_for", &val);
+    if (val.mv_data)
+        raft_vote(sv->raft, *(int*)val.mv_data);
+
+    mdb_gets(sv->db_env, sv->state, "term", &val);
+    if (val.mv_data)
+        raft_set_current_term(sv->raft, *(int*)val.mv_data);
 }
 
 int main(int argc, char **argv)
@@ -765,6 +853,9 @@ int main(int argc, char **argv)
     /* ticket DB */
     mdb_db_env_create(&sv->db_env, 0, opts.path, atoi(opts.db_size));
     mdb_db_create(&sv->tickets, sv->db_env, "docs");
+    mdb_db_create(&sv->state, sv->db_env, "state");
+
+    __load_persistent_state();
 
     /* web server for clients */
     h2o_pathconf_t *pathconf;

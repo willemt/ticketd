@@ -100,3 +100,27 @@ size_t mdb_env_get_mapsize(MDB_env *env)
 
     return info.me_mapsize;
 }
+
+void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val)
+{
+    MDB_txn *txn;
+
+    int e = mdb_txn_begin(env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    MDB_val key = { .mv_size = strlen(keystr), .mv_data = keystr };
+
+    e = mdb_get(txn, dbi, &key, val);
+    switch (e)
+    {
+    case 0:
+        break;
+    default:
+        mdb_fatal(e);
+    }
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+}
