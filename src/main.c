@@ -200,7 +200,11 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
 
     /* redirect to leader if needed */
     int leader = raft_get_current_leader(sv->raft);
-    if (leader != sv->node_idx)
+    if (-1 == leader)
+    {
+        return h2oh_respond_with_error(req, 503, "Leader unavailable");
+    }
+    else if (leader != sv->node_idx)
     {
         raft_node_t* node = raft_get_node(sv->raft, leader);
         peer_connection_t* conn = raft_node_get_udata(node);

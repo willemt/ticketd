@@ -104,6 +104,24 @@ Forcing the client to redirect to the leader means that future requests will be 
 
    1272863780
 
+Leader Unavailability
+---------------------
+
+If the leader isn't available, then we respond with a 503.
+
+.. code-block:: bash
+
+   curl --request POST -i -L 127.0.0.1:8003
+
+.. code-block:: http
+   :class: dotted
+
+   HTTP/1.1 503 Leader unavailable
+   Date: Sat, 15 Aug 2015 05:54:38 GMT
+   Server: h2o/1.3.1
+   Connection: keep-alive
+   content-length: 0
+
 Building
 ========
 
