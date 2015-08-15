@@ -116,6 +116,10 @@ void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val)
     {
     case 0:
         break;
+    case MDB_NOTFOUND:
+        val->mv_data = NULL;
+        val->mv_size = 0;
+        break;
     default:
         mdb_fatal(e);
     }

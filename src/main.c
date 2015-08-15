@@ -114,6 +114,9 @@ typedef struct
     /* persistent state for voted_for and term */
     MDB_dbi state;
 
+    /* entries that have been appended to our log */
+    MDB_dbi entries;
+
     MDB_env *db_env;
 
     h2o_globalconf_t cfg;
@@ -372,7 +375,7 @@ static int __send_appendentries(
         };
 
         /* list of entries */
-        tpl_node *tn = tpl_map("IB", &m->entries[0].id, &tb); //, m->n_entries);
+        tpl_node *tn = tpl_map("IIB", &m->entries[0].id, &m->entries[0].term, &tb);
         size_t sz;
         tpl_pack(tn, 0);
         tpl_dump(tn, TPL_GETSIZE, &sz);
@@ -511,7 +514,7 @@ static void __deserialize_appendentries_payload(msg_entry_t* out,
 {
     tpl_bin tb;
 
-    tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &out->id, &tb);
+    tpl_node *tn = tpl_map(tpl_peek(TPL_MEM, img, sz), &out->id, &out->term, &tb);
     tpl_load(tn, TPL_MEM, img, sz);
     tpl_unpack(tn, 0);
 
@@ -765,18 +768,162 @@ void __raft_log(raft_server_t* raft, void *udata, const char *buf)
     printf("raft: '%s'\n", buf);
 }
 
+/**
+ * Offer adds an item to the log */
+static int __raft_logentry_offer(
+    raft_server_t* raft,
+    void *udata,
+    raft_entry_t *ety,
+    int ety_idx
+    )
+{
+    MDB_txn *txn;
+
+    int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    uv_buf_t bufs[1];
+    char buf[RAFT_BUFLEN];
+    __peer_msg_serialize(tpl_map("S(IIII)", ety), bufs, buf);
+
+    /* 1. put metadata */
+    ety_idx <<= 1;
+    MDB_val key = { .mv_size = sizeof(ety_idx), .mv_data = (void*)&ety_idx };
+    MDB_val val = { .mv_size = bufs->len, .mv_data = bufs->base };
+
+    e = mdb_put(txn, sv->entries, &key, &val, 0);
+    switch (e)
+    {
+    case 0:
+        break;
+    case MDB_MAP_FULL:
+    {
+        mdb_txn_abort(txn);
+        return -1;
+    }
+    default:
+        mdb_fatal(e);
+    }
+
+    /* 2. put entry */
+    ety_idx |= 1;
+    key.mv_size = sizeof(ety_idx);
+    key.mv_data = (void*)&ety_idx;
+    val.mv_size = bufs->len;
+    val.mv_data = bufs->base;
+
+    e = mdb_put(txn, sv->entries, &key, &val, 0);
+    switch (e)
+    {
+    case 0:
+        break;
+    case MDB_MAP_FULL:
+    {
+        mdb_txn_abort(txn);
+        return -1;
+    }
+    default:
+        mdb_fatal(e);
+    }
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    return 0;
+}
+
+static int __raft_logentry_poll(
+    raft_server_t* raft,
+    void *udata,
+    raft_entry_t *entry,
+    int ety_idx
+    )
+{
+    return 0;
+}
+
+static int __raft_logentry_pop(
+    raft_server_t* raft,
+    void *udata,
+    raft_entry_t *entry,
+    int ety_idx
+    )
+{
+    return 0;
+}
+
 raft_cbs_t raft_funcs = {
     .send_requestvote            = __send_requestvote,
     .send_appendentries          = __send_appendentries,
     .applylog                    = __applylog,
     .persist_vote                = __persist_vote,
     .persist_term                = __persist_term,
+    .log_offer                   = __raft_logentry_offer,
+    .log_poll                    = __raft_logentry_poll,
+    .log_pop                     = __raft_logentry_pop,
     .log                         = __raft_log,
 };
 
 static void __periodic(uv_timer_t* handle)
 {
     raft_periodic(sv->raft, PERIOD_MSEC);
+}
+
+static void __load_commit_log()
+{
+    MDB_cursor* curs;
+    MDB_txn *txn;
+    MDB_val k, v;
+    int e;
+
+    e = mdb_txn_begin(sv->db_env, NULL, MDB_RDONLY, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    e = mdb_cursor_open(txn, sv->entries, &curs);
+    if (0 != e)
+        mdb_fatal(e);
+
+    e = mdb_cursor_get(curs, &k, &v, MDB_FIRST);
+    switch (e)
+    {
+    case 0:
+        break;
+    case MDB_NOTFOUND:
+        return;
+    default:
+        mdb_fatal(e);
+    }
+
+    raft_entry_t ety;
+
+    do
+    {
+        if (!(*(int*)k.mv_data & 1))
+        {
+            tpl_node *tn =
+                tpl_map(tpl_peek(TPL_MEM, v.mv_data, v.mv_size), &ety);
+            tpl_load(tn, TPL_MEM, v.mv_data, v.mv_size);
+            tpl_unpack(tn, 0);
+        }
+        else
+        {
+            ety.data = v.mv_data;
+            ety.len = v.mv_size;
+            raft_append_entry(sv->raft, &ety);
+        }
+
+        e = mdb_cursor_get(curs, &k, &v, MDB_NEXT);
+    }
+    while (0 == e);
+
+    mdb_cursor_close(curs);
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
 }
 
 static void __load_persistent_state()
@@ -820,9 +967,6 @@ int main(int argc, char **argv)
 
     srand(time(NULL));
 
-    // TODO: load commits
-    // TODO: load voted for
-    // TODO: load term
     // TODO: add option for dropping persisted data
 
     /* parse list of raft peers */
@@ -856,10 +1000,12 @@ int main(int argc, char **argv)
 
     /* ticket DB */
     mdb_db_env_create(&sv->db_env, 0, opts.path, atoi(opts.db_size));
+    mdb_db_create(&sv->entries, sv->db_env, "entries");
     mdb_db_create(&sv->tickets, sv->db_env, "docs");
     mdb_db_create(&sv->state, sv->db_env, "state");
 
     __load_persistent_state();
+    __load_commit_log();
 
     /* web server for clients */
     h2o_pathconf_t *pathconf;
