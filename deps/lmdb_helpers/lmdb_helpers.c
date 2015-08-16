@@ -128,3 +128,89 @@ void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val)
     if (0 != e)
         mdb_fatal(e);
 }
+
+int mdb_poll(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v)
+{
+    MDB_cursor* curs;
+    MDB_txn *txn;
+    int e;
+
+    e = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    e = mdb_cursor_open(txn, dbi, &curs);
+    if (0 != e)
+        mdb_fatal(e);
+
+    e = mdb_cursor_get(curs, k, v, MDB_FIRST);
+    switch (e)
+    {
+    case 0:
+        break;
+    case MDB_NOTFOUND:
+        return 0;
+    default:
+        mdb_fatal(e);
+    }
+
+    e = mdb_del(txn, dbi, k, v);
+    switch (e)
+    {
+    case 0:
+        break;
+    default:
+        mdb_fatal(e);
+    }
+
+    mdb_cursor_close(curs);
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    return 0;
+}
+
+int mdb_pop(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v)
+{
+    MDB_cursor* curs;
+    MDB_txn *txn;
+    int e;
+
+    e = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    e = mdb_cursor_open(txn, dbi, &curs);
+    if (0 != e)
+        mdb_fatal(e);
+
+    e = mdb_cursor_get(curs, k, v, MDB_LAST);
+    switch (e)
+    {
+    case 0:
+        break;
+    case MDB_NOTFOUND:
+        return 0;
+    default:
+        mdb_fatal(e);
+    }
+
+    e = mdb_del(txn, dbi, k, v);
+    switch (e)
+    {
+    case 0:
+        break;
+    default:
+        mdb_fatal(e);
+    }
+
+    mdb_cursor_close(curs);
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    return 0;
+}

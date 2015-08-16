@@ -841,6 +841,10 @@ static int __raft_logentry_poll(
     int ety_idx
     )
 {
+    MDB_val k, v;
+
+    mdb_poll(sv->db_env, sv->entries, &k, &v);
+
     return 0;
 }
 
@@ -851,6 +855,10 @@ static int __raft_logentry_pop(
     int ety_idx
     )
 {
+    MDB_val k, v;
+
+    mdb_pop(sv->db_env, sv->entries, &k, &v);
+
     return 0;
 }
 
@@ -899,10 +907,13 @@ static void __load_commit_log()
 
     raft_entry_t ety;
 
+    int n_entries = 0;
+
     do
     {
         if (!(*(int*)k.mv_data & 1))
         {
+            /* load metadata */
             tpl_node *tn =
                 tpl_map(tpl_peek(TPL_MEM, v.mv_data, v.mv_size), &ety);
             tpl_load(tn, TPL_MEM, v.mv_data, v.mv_size);
@@ -910,9 +921,11 @@ static void __load_commit_log()
         }
         else
         {
+            /* load entry */
             ety.data = v.mv_data;
             ety.len = v.mv_size;
             raft_append_entry(sv->raft, &ety);
+            n_entries++;
         }
 
         e = mdb_cursor_get(curs, &k, &v, MDB_NEXT);
@@ -924,6 +937,8 @@ static void __load_commit_log()
     e = mdb_txn_commit(txn);
     if (0 != e)
         mdb_fatal(e);
+
+    printf("Entries loaded: %d\n", n_entries);
 }
 
 static void __load_persistent_state()
