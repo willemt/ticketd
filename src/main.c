@@ -357,14 +357,13 @@ static int __send_appendentries(
         .type              = MSG_APPENDENTRIES,
         .ae                = {
             .term          = m->term,
-            .leader_id     = m->leader_id,
             .prev_log_idx  = m->prev_log_idx,
             .prev_log_term = m->prev_log_term,
             .leader_commit = m->leader_commit,
             .n_entries     = m->n_entries
         }
     };
-    ptr += __peer_msg_serialize(tpl_map("S(I$(IIIIII))", &msg), bufs, ptr);
+    ptr += __peer_msg_serialize(tpl_map("S(I$(IIIII))", &msg), bufs, ptr);
 
     /* appendentries with payload */
     if (0 < m->n_entries)
@@ -922,8 +921,8 @@ static void __load_commit_log()
         else
         {
             /* load entry */
-            ety.data = v.mv_data;
-            ety.len = v.mv_size;
+            ety.data.buf = v.mv_data;
+            ety.data.len = v.mv_size;
             raft_append_entry(sv->raft, &ety);
             n_entries++;
         }
