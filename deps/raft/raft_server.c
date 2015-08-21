@@ -21,6 +21,9 @@
 #include "raft_log.h"
 #include "raft_private.h"
 
+#define min(a, b) ((a) < (b) ? (a) : (b))
+#define max(a, b) ((a) < (b) ? (b) : (a))
+
 static void __log(raft_server_t *me_, const char *fmt, ...)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
@@ -279,27 +282,26 @@ int raft_recv_appendentries(
             r->success = 0;
             return 0;
         }
-
-        /* 3. If an existing entry conflicts with a new one (same index
-           but different terms), delete the existing entry and all that
-           follow it (§5.3) */
-        raft_entry_t* e2 = raft_get_entry_from_idx(me_, ae->prev_log_idx + 1);
-        if (e2)
-            log_delete(me->log, ae->prev_log_idx + 1);
     }
 
-    /* 5. If leaderCommit > commitIndex, set commitIndex =
+    /* 3. If an existing entry conflicts with a new one (same index
+       but different terms), delete the existing entry and all that
+       follow it (§5.3) */
+    raft_entry_t* e2 = raft_get_entry_from_idx(me_, ae->prev_log_idx + 1);
+    if (e2)
+    {
+        log_delete(me->log, ae->prev_log_idx + 1);
+        raft_set_current_idx(me_, ae->prev_log_idx);
+    }
+
+    /* 4. If leaderCommit > commitIndex, set commitIndex =
         min(leaderCommit, last log index) */
     if (raft_get_commit_idx(me_) < ae->leader_commit)
     {
-        raft_entry_t* e = log_peektail(me->log);
-        if (e)
-        {
-            int id = e->id < ae->leader_commit ?  e->id : ae->leader_commit;
-            raft_set_commit_idx(me_, id);
-            while (0 == raft_apply_entry(me_))
-                ;
-        }
+        int last_log_idx = max(raft_get_current_idx(me_) - 1, 1);
+        raft_set_commit_idx(me_, min(last_log_idx, ae->leader_commit));
+        while (0 == raft_apply_entry(me_))
+            ;
     }
 
     if (raft_is_candidate(me_))
@@ -619,5 +621,12 @@ void raft_vote(raft_server_t* me_, const int node)
 int raft_msg_entry_response_committed(raft_server_t* me_,
                                       const msg_entry_response_t* r)
 {
+    raft_entry_t* ety = raft_get_entry_from_idx(me_, r->idx);
+    if (!ety)
+        return 0;
+
+    /* entry from another leader has invalidated this entry message */
+    if (r->term != ety->term)
+        return -1;
     return r->idx <= raft_get_commit_idx(me_);
 }
