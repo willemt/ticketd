@@ -1,0 +1,7 @@
+language: c
+before_install:
+  - sudo pip install rsttst pytest httpie
+script:
+  - make libuv
+  - make libh2o
+  - make
