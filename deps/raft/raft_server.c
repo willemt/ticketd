@@ -181,7 +181,6 @@ int raft_recv_appendentries_response(raft_server_t* me_,
         /* If AppendEntries fails because of log inconsistency:
            decrement nextIndex and retry (§5.3) */
         assert(0 <= raft_node_get_next_idx(p));
-        // TODO does this have test coverage?
         // TODO can jump back to where node is different instead of iterating
         raft_node_set_next_idx(p, raft_node_get_next_idx(p) - 1);
 
@@ -407,8 +406,9 @@ int raft_recv_requestvote_response(raft_server_t* me_, int node,
 
     assert(node < me->num_nodes);
 
-//    if (r->term != raft_get_current_term(me_))
-//        return 0;
+    // TODO: if invalid leader then stepdown
+    // if (r->term != raft_get_current_term(me_))
+    // return 0;
 
     if (1 == r->vote_granted)
     {
@@ -438,13 +438,14 @@ int raft_recv_entry(raft_server_t* me_, int node, msg_entry_t* e,
     ety.data.len = e->data.len;
     ety.data.buf = malloc(e->data.len);
     memcpy(ety.data.buf, e->data.buf, e->data.len);
-    int res = raft_append_entry(me_, &ety);
+    raft_append_entry(me_, &ety);
     for (i = 0; i < me->num_nodes; i++)
         if (me->nodeid != i)
             raft_send_appendentries(me_, i);
 
     r->id = e->id;
-    r->was_committed = (0 == res);
+    r->idx = me->current_idx;
+    r->term = me->current_term;
     return 0;
 }
 
@@ -613,4 +614,10 @@ void raft_vote(raft_server_t* me_, const int node)
     me->voted_for = node;
     if (me->cb.persist_vote)
         me->cb.persist_vote(me_, me->udata, node);
+}
+
+int raft_msg_entry_response_committed(raft_server_t* me_,
+                                      const msg_entry_response_t* r)
+{
+    return r->idx <= raft_get_commit_idx(me_);
 }

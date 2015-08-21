@@ -15,6 +15,7 @@
 #include "lmdb_helpers.h"
 #include "raft.h"
 #include "uv_helpers.h"
+#include "uv_multiplex.h"
 #include "tpl.h"
 
 #include "usage.c"
@@ -28,6 +29,8 @@
 #define PERIOD_MSEC 500
 #define RAFT_BUFLEN 512
 #define LEADER_URL_LEN 512
+#define IPC_PIPE_NAME "ticketd_ipc"
+#define HTTP_WORKERS 1
 
 typedef enum
 {
@@ -121,6 +124,9 @@ typedef struct
 
     h2o_globalconf_t cfg;
     h2o_context_t ctx;
+
+    uv_mutex_t raft_lock;
+    uv_cond_t appendentries_received;
 } server_t;
 
 options_t opts;
@@ -238,14 +244,32 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
     entry.data.buf = (void*)&ticket;
     entry.data.len = sizeof(ticket);
 
-    /* block until the entry is committed */
+    uv_mutex_lock(&sv->raft_lock);
+
     msg_entry_response_t r;
     e = raft_recv_entry(sv->raft, sv->node_idx, &entry, &r);
     if (0 != e)
         return h2oh_respond_with_error(req, 500, "BAD");
 
-    if (0 == r.was_committed)
-        return h2oh_respond_with_error(req, 400, "TRY AGAIN");
+    /* block until the entry is committed */
+    int done = 0;
+    do {
+        uv_cond_wait(&sv->appendentries_received, &sv->raft_lock);
+        e = raft_msg_entry_response_committed(sv->raft, &r);
+        switch (e)
+        {
+            case 0:
+                /* not committed yet */
+                break;
+            case 1:
+                done = 1;
+                uv_mutex_unlock(&sv->raft_lock);
+                break;
+            case -1:
+                uv_mutex_unlock(&sv->raft_lock);
+                return h2oh_respond_with_error(req, 400, "TRY AGAIN");
+        }
+    } while (!done);
 
     /* serialize ID */
     char id_str[100];
@@ -628,6 +652,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         break;
     case MSG_APPENDENTRIES_RESPONSE:
         e = raft_recv_appendentries_response(sv->raft, conn->node_idx, &m.aer);
+        uv_cond_signal(&sv->appendentries_received);
         break;
     default:
         printf("unknown msg\n");
@@ -655,8 +680,10 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
 
     if (0 <= nread)
     {
+        uv_mutex_lock(&sv->raft_lock);
         tpl_gather(TPL_GATHER_MEM, buf->base, nread, &conn->gt,
                    __deserialize_and_handle_msg, conn);
+        uv_mutex_unlock(&sv->raft_lock);
     }
 }
 
@@ -953,9 +980,26 @@ static void __load_persistent_state()
         raft_set_current_term(sv->raft, *(int*)val.mv_data);
 }
 
+static void __http_worker_start(void* uv_tcp)
+{
+    assert(uv_tcp);
+
+    uv_tcp_t* listener = uv_tcp;
+    //_thread_t* thread = listener->data;
+
+    h2o_context_init(&sv->ctx, listener->loop, &sv->cfg);
+
+    int e = uv_listen((uv_stream_t*)listener, MAX_HTTP_CONNECTIONS, __on_http_connection);
+    if (e != 0)
+        uv_fatal(e);
+
+    while (1)
+        uv_run(listener->loop, UV_RUN_DEFAULT);
+}
+
 int main(int argc, char **argv)
 {
-    int e;
+    int e, i;
 
     e = parse_options(argc, argv, &opts);
     if (-1 == e)
@@ -1035,14 +1079,13 @@ int main(int argc, char **argv)
     handler = h2o_create_handler(pathconf, sizeof(*handler));
     handler->on_req = __http_get_id;
 
+    uv_mutex_init(&sv->raft_lock);
+    uv_cond_init(&sv->appendentries_received);
+
     /* listen socket for HTTP client traffic */
     uv_tcp_t http_listen;
     h2o_context_init(&sv->ctx, &loop, &sv->cfg);
     uv_bind_listen_socket(&http_listen, opts.host, atoi(opts.http_port), &loop);
-    e = uv_listen((uv_stream_t*)&http_listen, MAX_HTTP_CONNECTIONS,
-                  __on_http_connection);
-    if (0 != e)
-        uv_fatal(e);
 
     /* listen socket for raft peers */
     uv_tcp_t peer_listen;
@@ -1060,7 +1103,10 @@ int main(int argc, char **argv)
     uv_timer_start(periodic_req, __periodic, 0, 1000);
     raft_set_election_timeout(sv->raft, 1000);
 
-    e = uv_run(&loop, UV_RUN_DEFAULT);
-    if (0 != e)
-        uv_fatal(e);
+    /* http workers */
+    uv_multiplex_t m;
+    uv_multiplex_init(&m, &http_listen, IPC_PIPE_NAME, HTTP_WORKERS, __http_worker_start);
+    for (i = 0; i < HTTP_WORKERS; i++)
+        uv_multiplex_worker_create(&m, i, NULL);
+    uv_multiplex_dispatch(&m);
 }

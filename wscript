@@ -23,12 +23,14 @@ def build(bld):
         platform = ''
 
     clibs = """
+        container_of
         h2o_helpers
         lmdb
         lmdb_helpers
         raft
         tpl
         uv_helpers
+        uv_multiplex
         """.split()
 
     h2o_includes = """
