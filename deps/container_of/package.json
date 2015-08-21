@@ -1,0 +1,9 @@
+{
+  "name": "container_of",
+  "version": "0.0.1",
+  "repo": "clibs/container_of",
+  "description": "Obtain a pointer to the struct that contains the struct member",
+  "keywords": ["pointer"],
+  "license": "public domain",
+  "src": ["container_of.h"]
+}

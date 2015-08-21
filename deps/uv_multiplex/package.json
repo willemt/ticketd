@@ -1,0 +1,9 @@
+{
+  "name": "uv_multiplex",
+  "version": "0.0.1",
+  "repo": "willemt/uv_multiplex",
+  "description": "Let's share one TCP socket across multiple threads",
+  "keywords": ["libuv", "tcp"],
+  "license": "BSD",
+  "src": ["src/dispatcher.c", "src/worker.c", "include/uv_multiplex.h"]
+}

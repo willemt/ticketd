@@ -47,25 +47,6 @@ libuv_fetch:
 libuv: libuv_fetch libuv_build
 .PHONY : libuv
 
-libnanomsg_build:
-	cd deps/nanomsg && sh autogen.sh
-	cd deps/nanomsg && ./configure
-	cd deps/nanomsg && make
-	cp deps/nanomsg/.libs/libnanomsg.a .
-	mkdir -p deps/nanomsg/include/nanomsg/
-	cp deps/nanomsg/src/*.h deps/nanomsg/include/nanomsg/
-.PHONY : libnanomsg_build
-
-libnanomsg_fetch:
-	if test -e deps/nanomsg; \
-	then cd deps/nanomsg && git pull ; \
-	else git clone https://github.com/nanomsg/nanomsg deps/nanomsg; \
-	fi
-.PHONY : libck_fetch
-
-libnanomsg: libnanomsg_fetch libnanomsg_build
-.PHONY : libnanomsg
-
 libuv_vendor:
 	rm -rf deps/libuv/.git > /dev/null
 .PHONY : libuv_vendor
