@@ -23,14 +23,14 @@
 
 #define VERSION "0.1.0"
 #define ANYPORT 65535
-#define MAX_HTTP_CONNECTIONS 100
-#define MAX_PEER_CONNECTIONS 100
+#define MAX_HTTP_CONNECTIONS 128
+#define MAX_PEER_CONNECTIONS 128
 #define IPV4_STR_LEN 3 * 4 + 3 + 1
 #define PERIOD_MSEC 500
 #define RAFT_BUFLEN 512
 #define LEADER_URL_LEN 512
 #define IPC_PIPE_NAME "ticketd_ipc"
-#define HTTP_WORKERS 1
+#define HTTP_WORKERS 2
 
 typedef enum
 {
@@ -1018,7 +1018,9 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
 
     uv_loop_t loop;
-    uv_loop_init(&loop);
+    e = uv_loop_init(&loop);
+    if (0 != e)
+        uv_fatal(e);
 
     sv->raft = raft_new();
     raft_set_callbacks(sv->raft, &raft_funcs, sv);
@@ -1026,35 +1028,6 @@ int main(int argc, char **argv)
     srand(time(NULL));
 
     // TODO: add option for dropping persisted data
-
-    /* parse list of raft peers */
-    int node_idx = 0;
-    char *tok = opts.PEERS;
-    while ((tok = strsep(&opts.PEERS, ",")) != NULL)
-    {
-        addr_parse_result_t res;
-        parse_addr(tok, strlen(tok), &res);
-        res.host[res.host_len] = '\0';
-
-        peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
-        conn->node_idx = node_idx;
-        conn->loop = &loop;
-        e = uv_ip4_addr(res.host, atoi(res.port), &conn->addr);
-        if (0 != e)
-            uv_fatal(e);
-
-        int peer_is_self = (0 == strcmp(opts.host, res.host) &&
-                            opts.peer_port && res.port &&
-                            0 == strcmp(opts.peer_port, res.port));
-
-        if (peer_is_self)
-            sv->node_idx = node_idx;
-        else
-            __connect_to_peer(conn, conn->loop);
-
-        raft_add_peer(sv->raft, conn, peer_is_self);
-        node_idx++;
-    }
 
     /* ticket DB */
     mdb_db_env_create(&sv->db_env, 0, opts.path, atoi(opts.db_size));
@@ -1084,12 +1057,52 @@ int main(int argc, char **argv)
 
     /* listen socket for HTTP client traffic */
     uv_tcp_t http_listen;
-    h2o_context_init(&sv->ctx, &loop, &sv->cfg);
     uv_bind_listen_socket(&http_listen, opts.host, atoi(opts.http_port), &loop);
+
+    /* http workers */
+    uv_multiplex_t m;
+    uv_multiplex_init(&m, &http_listen, IPC_PIPE_NAME, HTTP_WORKERS, __http_worker_start);
+    for (i = 0; i < HTTP_WORKERS; i++)
+        uv_multiplex_worker_create(&m, i, NULL);
+    uv_multiplex_dispatch(&m);
+
+    uv_loop_t peer_loop;
+    e = uv_loop_init(&peer_loop);
+    if (0 != e)
+        uv_fatal(e);
+
+    /* parse list of raft peers */
+    int node_idx = 0;
+    char *tok = opts.PEERS;
+    while ((tok = strsep(&opts.PEERS, ",")) != NULL)
+    {
+        addr_parse_result_t res;
+        parse_addr(tok, strlen(tok), &res);
+        res.host[res.host_len] = '\0';
+
+        peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
+        conn->node_idx = node_idx;
+        conn->loop = &peer_loop;
+        e = uv_ip4_addr(res.host, atoi(res.port), &conn->addr);
+        if (0 != e)
+            uv_fatal(e);
+
+        int peer_is_self = (0 == strcmp(opts.host, res.host) &&
+                            opts.peer_port && res.port &&
+                            0 == strcmp(opts.peer_port, res.port));
+
+        if (peer_is_self)
+            sv->node_idx = node_idx;
+        else
+            __connect_to_peer(conn, conn->loop);
+
+        raft_add_peer(sv->raft, conn, peer_is_self);
+        node_idx++;
+    }
 
     /* listen socket for raft peers */
     uv_tcp_t peer_listen;
-    uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.peer_port), &loop);
+    uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.peer_port), &peer_loop);
     e = uv_listen((uv_stream_t*)&peer_listen, MAX_PEER_CONNECTIONS,
                   __on_peer_connection);
     if (0 != e)
@@ -1099,14 +1112,10 @@ int main(int argc, char **argv)
     uv_timer_t *periodic_req;
     periodic_req = malloc(sizeof(uv_timer_t));
     periodic_req->data = sv;
-    uv_timer_init(&loop, periodic_req);
+    uv_timer_init(&peer_loop, periodic_req);
     uv_timer_start(periodic_req, __periodic, 0, 1000);
     raft_set_election_timeout(sv->raft, 1000);
 
-    /* http workers */
-    uv_multiplex_t m;
-    uv_multiplex_init(&m, &http_listen, IPC_PIPE_NAME, HTTP_WORKERS, __http_worker_start);
-    for (i = 0; i < HTTP_WORKERS; i++)
-        uv_multiplex_worker_create(&m, i, NULL);
-    uv_multiplex_dispatch(&m);
+    while (1)
+        uv_run(&peer_loop, UV_RUN_DEFAULT);
 }
