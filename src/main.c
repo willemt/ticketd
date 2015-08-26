@@ -30,7 +30,7 @@
 #define RAFT_BUFLEN 512
 #define LEADER_URL_LEN 512
 #define IPC_PIPE_NAME "ticketd_ipc"
-#define HTTP_WORKERS 2
+#define HTTP_WORKERS 1
 
 typedef enum
 {
