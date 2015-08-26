@@ -32,10 +32,12 @@
 #define IPC_PIPE_NAME "ticketd_ipc"
 #define HTTP_WORKERS 1
 
+/** Message types used for peer to peer traffic
+ * These values are used to identify message types during deserialization */
 typedef enum
 {
-    /** If we are a peer that is attemping a connection need to send a handshake
-     * This is because we need to identify ourselves */
+    /** Handshake is a special non-raft message type
+     * We send a handshake so that we can identify ourselves to our peers */
     MSG_HANDSHAKE,
     MSG_REQUESTVOTE,
     MSG_REQUESTVOTE_RESPONSE,
@@ -43,9 +45,8 @@ typedef enum
     MSG_APPENDENTRIES_RESPONSE,
 } peer_message_type_e;
 
-/**
- * Peer protocol:
- * Send handshake after connecting so that we can identify the peer */
+/** Peer protocol handshake
+ * Send handshake after connecting so that our peer can identify us */
 typedef struct
 {
     int peer_port;
@@ -88,13 +89,13 @@ typedef struct
     /* peer's raft node_idx */
     int node_idx;
 
-    /* number of expected entries.
+    /* number of entries currently expected.
      * this counts down as we consume entries */
     int n_expected_entries;
 
     /* remember most recent append entries msg, we refer to this msg when we
-     * finish reading the log entries
-     * used by n_expected_entries */
+     * finish reading the log entries.
+     * used in tandem with n_expected_entries */
     msg_t ae;
 
     uv_stream_t* stream;
@@ -126,6 +127,9 @@ typedef struct
     h2o_context_t ctx;
 
     uv_mutex_t raft_lock;
+
+    /* when we receive an entry from the client we need to block until the 
+     * entry has been committed. This condition is used to wake us up. */
     uv_cond_t appendentries_received;
 } server_t;
 
@@ -135,7 +139,7 @@ server_t *sv = &server;
 
 static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop);
 
-/**
+/** Serialize a peer message using TPL
  * @param[out] bufs libuv buffer to insert serialized message into
  * @param[out] buf Buffer to write serialized message into */
 static size_t __peer_msg_serialize(tpl_node *tn, uv_buf_t *buf, char* data)
@@ -150,7 +154,7 @@ static size_t __peer_msg_serialize(tpl_node *tn, uv_buf_t *buf, char* data)
     return sz;
 }
 
-/**
+/** Check if the ticket has already been issued
  * @return 0 if not unique; otherwise 1 */
 static int __check_if_ticket_exists(const unsigned int ticket)
 {
@@ -197,8 +201,7 @@ static unsigned int __generate_ticket()
     return ticket;
 }
 
-/**
- * HTTP POST /
+/** HTTP POST entry point for receiving entries from client
  * Provide the user with an ID */
 static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
 {
@@ -284,6 +287,7 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
     return 0;
 }
 
+/** Received an HTTP connection from client */
 static void __on_http_connection(uv_stream_t *listener, const int status)
 {
     int e;
@@ -305,6 +309,7 @@ static void __on_http_connection(uv_stream_t *listener, const int status)
     h2o_http1_accept(&sv->ctx, sv->cfg.hosts, sock);
 }
 
+/** Write peer traffic */
 static void __peer_write_cb(uv_write_t *req, int status)
 {
     peer_connection_t* conn = req->data;
@@ -321,6 +326,7 @@ static void __peer_write_cb(uv_write_t *req, int status)
     }
 }
 
+/** Initiate connection if we are disconnected */
 static int __connect_if_needed(peer_connection_t* conn)
 {
     if (CONNECTED != conn->connection_status)
@@ -332,6 +338,7 @@ static int __connect_if_needed(peer_connection_t* conn)
     return 0;
 }
 
+/** Raft callback for sending request vote message */
 static int __send_requestvote(
     raft_server_t* raft,
     void *udata,
@@ -360,6 +367,7 @@ static int __send_requestvote(
     return 0;
 }
 
+/** Raft callback for sending appendentries message */
 static int __send_appendentries(
     raft_server_t* raft,
     void *udata,
@@ -424,6 +432,7 @@ static int __send_appendentries(
     return 0;
 }
 
+/** Raft callback for applying an entry to the finite state machine */
 static int __applylog(
     raft_server_t* raft,
     void *udata,
@@ -461,6 +470,8 @@ static int __applylog(
     return 0;
 }
 
+/** Raft callback for saving term field to disk.
+ * This only returns when change has been made to disk. */
 static int __persist_term(
     raft_server_t* raft,
     void *udata,
@@ -493,6 +504,8 @@ static int __persist_term(
     return 0;
 }
 
+/** Raft callback for saving voted_for field to disk.
+ * This only returns when change has been made to disk. */
 static int __persist_vote(
     raft_server_t* raft,
     void *udata,
@@ -531,6 +544,7 @@ static void __peer_alloc_cb(uv_handle_t* handle, size_t size, uv_buf_t* buf)
     buf->base = malloc(size);
 }
 
+/** Deserialize a single log entry from appendentries message */
 static void __deserialize_appendentries_payload(msg_entry_t* out,
                                                 peer_connection_t* conn,
                                                 void *img, size_t sz)
@@ -545,8 +559,7 @@ static void __deserialize_appendentries_payload(msg_entry_t* out,
     out->data.len = tb.sz;
 }
 
-/**
- * Parse raft traffic using binary protocol, and respond to message */
+/** Parse raft peer traffic using binary protocol, and respond to message */
 static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 {
     peer_connection_t* conn = data;
@@ -661,8 +674,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     return 0;
 }
 
-/**
- * Read raft traffic using binary protocol */
+/** Read raft traffic using binary protocol */
 static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
 {
     peer_connection_t* conn = tcp->data;
@@ -687,6 +699,7 @@ static void __peer_read_cb(uv_stream_t* tcp, ssize_t nread, const uv_buf_t* buf)
     }
 }
 
+/** Send handshake to raft peer */
 static void __send_handshake(peer_connection_t* conn)
 {
     uv_buf_t bufs[1];
@@ -701,8 +714,7 @@ static void __send_handshake(peer_connection_t* conn)
         uv_fatal(e);
 }
 
-/**
- * Raft peer has connected to us */
+/** Raft peer has connected to us */
 static void __on_peer_connection(uv_stream_t *listener, const int status)
 {
     int e;
@@ -737,8 +749,7 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
         uv_fatal(e);
 }
 
-/**
- * Our connection attempt to raft peer has succeeded */
+/** Our connection attempt to raft peer has succeeded */
 static void __on_connection_accepted_by_peer(uv_connect_t *req,
                                              const int status)
 {
@@ -765,8 +776,7 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
         uv_fatal(e);
 }
 
-/**
- * Connect to raft peer */
+/** Connect to raft peer */
 static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop)
 {
     int e;
@@ -789,13 +799,13 @@ static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop)
     return 0;
 }
 
+/** Raft callback for displaying debugging information */
 void __raft_log(raft_server_t* raft, void *udata, const char *buf)
 {
     printf("raft: '%s'\n", buf);
 }
 
-/**
- * Offer adds an item to the log */
+/** Raft callback for appending an item to the log */
 static int __raft_logentry_offer(
     raft_server_t* raft,
     void *udata,
@@ -860,6 +870,8 @@ static int __raft_logentry_offer(
     return 0;
 }
 
+/** Raft callback for removing the first entry from the log
+ * @note this is provided to support log compaction in the future */
 static int __raft_logentry_poll(
     raft_server_t* raft,
     void *udata,
@@ -874,6 +886,9 @@ static int __raft_logentry_poll(
     return 0;
 }
 
+/** Raft callback for deleting the most recent entry from the log.
+ * This happens when an invalid leader finds a valid leader and has to delete
+ * superseded log entries. */
 static int __raft_logentry_pop(
     raft_server_t* raft,
     void *udata,
@@ -900,11 +915,13 @@ raft_cbs_t raft_funcs = {
     .log                         = __raft_log,
 };
 
+/** Raft callback for handling periodic logic */
 static void __periodic(uv_timer_t* handle)
 {
     raft_periodic(sv->raft, PERIOD_MSEC);
 }
 
+/** Load all log entries we have persisted to disk */
 static void __load_commit_log()
 {
     MDB_cursor* curs;
@@ -967,6 +984,7 @@ static void __load_commit_log()
     printf("Entries loaded: %d\n", n_entries);
 }
 
+/** Load voted_for and term raft fields */
 static void __load_persistent_state()
 {
     MDB_val val;
@@ -1047,11 +1065,14 @@ int main(int argc, char **argv)
     hostconf = h2o_config_register_host(&sv->cfg,
                                         h2o_iovec_init(H2O_STRLIT("default")),
                                         ANYPORT);
+
+    /* HTTP route for receiving entries from clients */
     pathconf = h2o_config_register_path(hostconf, "/");
     h2o_chunked_register(pathconf);
     handler = h2o_create_handler(pathconf, sizeof(*handler));
     handler->on_req = __http_get_id;
 
+    /* lock and condition to support HTTP client blocking */
     uv_mutex_init(&sv->raft_lock);
     uv_cond_init(&sv->appendentries_received);
 
@@ -1071,7 +1092,8 @@ int main(int argc, char **argv)
     if (0 != e)
         uv_fatal(e);
 
-    /* parse list of raft peers */
+    /* parse list of raft peers.
+     * attempt connections. */
     int node_idx = 0;
     char *tok = opts.PEERS;
     while ((tok = strsep(&opts.PEERS, ",")) != NULL)
@@ -1100,7 +1122,7 @@ int main(int argc, char **argv)
         node_idx++;
     }
 
-    /* listen socket for raft peers */
+    /* listen socket for raft peer traffic */
     uv_tcp_t peer_listen;
     uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.peer_port), &peer_loop);
     e = uv_listen((uv_stream_t*)&peer_listen, MAX_PEER_CONNECTIONS,
