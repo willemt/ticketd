@@ -341,7 +341,7 @@ static int __connect_if_needed(peer_connection_t* conn)
 /** Raft callback for sending request vote message */
 static int __send_requestvote(
     raft_server_t* raft,
-    void *udata,
+    void *user_data,
     int nodeidx,
     msg_requestvote_t* m
     )
@@ -370,7 +370,7 @@ static int __send_requestvote(
 /** Raft callback for sending appendentries message */
 static int __send_appendentries(
     raft_server_t* raft,
-    void *udata,
+    void *user_data,
     int nodeidx,
     msg_appendentries_t* m
     )
@@ -1118,7 +1118,7 @@ int main(int argc, char **argv)
         else
             __connect_to_peer(conn, conn->loop);
 
-        raft_add_peer(sv->raft, conn, peer_is_self);
+        raft_add_node(sv->raft, conn, peer_is_self);
         node_idx++;
     }
 
