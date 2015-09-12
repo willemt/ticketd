@@ -57,17 +57,13 @@ def build(bld):
         ./deps/libuv/include
         """.split()
 
-    nm_includes = """
-        ./deps/nanomsg/include
-        """.split()
-
     bld.program(
         source="""
         src/main.c
         """.split() + bld.clib_c_files(clibs),
-        includes=['./include'] + bld.clib_h_paths(clibs) + h2o_includes + uv_includes + nm_includes,
+        includes=['./include'] + bld.clib_h_paths(clibs) + h2o_includes + uv_includes,
         target='ticketd',
         stlibpath=['.'],
         libpath=[os.getcwd()],
-        lib=['uv', 'h2o', 'ssl', 'crypto', 'nanomsg'],
+        lib=['uv', 'h2o', 'ssl', 'crypto'],
         cflags=cflags)
