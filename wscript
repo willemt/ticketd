@@ -17,10 +17,24 @@ def configure(conf):
 def build(bld):
     bld.load('clib')
 
-    if sys.platform == 'linux2':
-        platform = '-DLINUX'
-    else:
-        platform = ''
+    cflags = """
+        -Werror=int-to-pointer-cast
+        -g
+        -Werror=unused-variable
+        -Werror=return-type
+        -Werror=uninitialized
+        -Werror=pointer-to-int-cast
+    """.split()
+
+    if sys.platform == 'darwin':
+        cflags.extend("""
+            -fcolor-diagnostics
+            -fdiagnostics-color
+            """.split())
+    elif sys.platform.startswith('linux'):
+        cflags.extend("""
+            -DLINUX
+            """.split())
 
     clibs = """
         container_of
@@ -56,14 +70,4 @@ def build(bld):
         stlibpath=['.'],
         libpath=[os.getcwd()],
         lib=['uv', 'h2o', 'ssl', 'crypto', 'nanomsg'],
-        cflags=[
-            '-Werror=int-to-pointer-cast',
-            '-g',
-            platform,
-            '-fcolor-diagnostics',
-            '-fdiagnostics-color',
-            '-Werror=unused-variable',
-            '-Werror=return-type',
-            '-Werror=uninitialized',
-            '-Werror=pointer-to-int-cast',
-            ])
+        cflags=cflags)
