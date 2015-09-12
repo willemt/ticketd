@@ -26,6 +26,8 @@ def build(bld):
         -Werror=pointer-to-int-cast
     """.split()
 
+    lib = ['uv', 'h2o', 'ssl', 'crypto']
+
     if sys.platform == 'darwin':
         cflags.extend("""
             -fcolor-diagnostics
@@ -35,6 +37,8 @@ def build(bld):
         cflags.extend("""
             -DLINUX
             """.split())
+        lib.append('pthread')
+        lib.append('rt')
 
     clibs = """
         container_of
@@ -65,5 +69,5 @@ def build(bld):
         target='ticketd',
         stlibpath=['.'],
         libpath=[os.getcwd()],
-        lib=['uv', 'h2o', 'ssl', 'crypto'],
+        lib=lib,
         cflags=cflags)
