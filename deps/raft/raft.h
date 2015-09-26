@@ -18,20 +18,22 @@ typedef struct
     unsigned int len;
 } raft_entry_data_t;
 
-/** Message sent from client to server.
- * The client sends this message to a server with the intention of having it
- * applied to the FSM. */
+/** Entry that is stored in the server's entry log. */
 typedef struct
 {
-    /** the term the entry was created */
-    int term;
+    /** the entry's term at the point it was created */
+    unsigned int term;
 
-    /** the entry's unique ID
-     * The ID is used to prevent duplicate entries from being appended */
+    /** the entry's unique ID */
     unsigned int id;
 
     raft_entry_data_t data;
-} msg_entry_t;
+} raft_entry_t;
+
+/** Message sent from client to server.
+ * The client sends this message to a server with the intention of having it
+ * applied to the FSM. */
+typedef raft_entry_t msg_entry_t;
 
 /** Entry message response.
  * Indicates to client if entry was committed or not. */
@@ -129,18 +131,6 @@ typedef struct
 typedef void* raft_server_t;
 typedef void* raft_node_t;
 
-/** Entry that is stored in the server's entry log. */
-typedef struct
-{
-    /** the entry's term at the point it was created */
-    unsigned int term;
-
-    /** the entry's unique ID */
-    unsigned int id;
-
-    raft_entry_data_t data;
-} raft_entry_t;
-
 /** Callback for sending request vote messages.
  * @param[in] raft The Raft server making this callback
  * @param[in] user_data User data that is passed from Raft server
@@ -152,7 +142,7 @@ typedef int (
 )   (
     raft_server_t* raft,
     void *user_data,
-    int node,
+    raft_node_t* node,
     msg_requestvote_t* msg
     );
 
@@ -167,7 +157,7 @@ typedef int (
 )   (
     raft_server_t* raft,
     void *user_data,
-    int node,
+    raft_node_t* node,
     msg_appendentries_t* msg
     );
 
@@ -190,16 +180,14 @@ typedef void (
 /** Callback for applying this log entry to the state machine.
  * @param[in] raft The Raft server making this callback
  * @param[in] user_data User data that is passed from Raft server
- * @param[in] data Data to be applied to the log
- * @param[in] len Length in bytes of data to be applied
+ * @param[in] ety The log entry
  * @return 0 on success */
 typedef int (
 *func_applylog_f
 )   (
     raft_server_t* raft,
     void *user_data,
-    const unsigned char *log_data,
-    const int log_len
+    raft_entry_t* ety
     );
 
 /** Callback for saving who we voted for to disk.
@@ -213,7 +201,7 @@ typedef int (
 )   (
     raft_server_t* raft,
     void *user_data,
-    const int voted_for
+    int node
     );
 
 /** Callback for saving log entry changes.
@@ -241,6 +229,22 @@ typedef int (
     void *user_data,
     raft_entry_t *entry,
     int entry_idx
+    );
+
+/** Callback for sending log entry messages.
+ * This callback is optional.
+ * @param[in] raft The Raft server making this callback
+ * @param[in] user_data User data that is passed from Raft server
+ * @param[in] node The node's ID that we are sending this message to
+ * @param[in] msg The entry message to be sent
+ * @return 0 on success */
+typedef int (
+*func_send_entry_f
+)   (
+    raft_server_t* raft,
+    void *user_data,
+    int node,
+    msg_entry_t* msg
     );
 
 typedef struct
@@ -310,17 +314,6 @@ void raft_free(raft_server_t* me);
  * @param[in] user_data "User data" - user's context that's included in a callback */
 void raft_set_callbacks(raft_server_t* me, raft_cbs_t* funcs, void* user_data);
 
-/** Set configuration.
- *
- * @deprecated This function has been replaced by raft_add_node and
- * raft_remove_node
- *
- * @param[in] nodes Array of nodes. End of array is marked by NULL entry
- * @param[in] my_idx Index of the node that refers to this Raft server */
-void raft_set_configuration(raft_server_t* me,
-                            raft_node_configuration_t* nodes, int my_idx)
-__attribute__ ((deprecated));
-
 /** Add node.
  *
  * @note This library does not yet support membership changes.
@@ -335,9 +328,16 @@ __attribute__ ((deprecated));
  *  Examples of what this could be:
  *  - void* pointing to implementor's networking data
  *  - a (IP,Port) tuple
+ * @param[in] id The integer ID of this node
+ *  This is used for identifying clients across sessions.
  * @param[in] is_self Set to 1 if this "node" is this server
+ * @param[out] r If the cluster has started, an entry will be sent to the
+ *  leader so that we can have the membership change committed. We can check
+ *  this entry response with raft_msg_entry_response_committed to confirm if
+ *  it has been committed. If the cluster has not started it is safe to pass
+ *  NULL.
  * @return 0 on success; otherwise -1 */
-int raft_add_node(raft_server_t* me, void* user_data, int is_self);
+int raft_add_node(raft_server_t* me, void* user_data, int id, int is_self);
 
 #define raft_add_peer raft_add_node
 
@@ -374,7 +374,7 @@ int raft_periodic(raft_server_t* me, int msec_elapsed);
  * @param[out] r The resulting response
  * @return 0 on success */
 int raft_recv_appendentries(raft_server_t* me,
-                            int node,
+                            raft_node_t* node,
                             msg_appendentries_t* ae,
                             msg_appendentries_response_t *r);
 
@@ -383,7 +383,7 @@ int raft_recv_appendentries(raft_server_t* me,
  * @param[in] r The appendentries response message
  * @return 0 on success */
 int raft_recv_appendentries_response(raft_server_t* me,
-                                     int node,
+                                     raft_node_t* node,
                                      msg_appendentries_response_t* r);
 
 /** Receive a requestvote message.
@@ -392,7 +392,7 @@ int raft_recv_appendentries_response(raft_server_t* me,
  * @param[out] r The resulting response
  * @return 0 on success */
 int raft_recv_requestvote(raft_server_t* me,
-                          int node,
+                          raft_node_t* node,
                           msg_requestvote_t* vr,
                           msg_requestvote_response_t *r);
 
@@ -401,7 +401,7 @@ int raft_recv_requestvote(raft_server_t* me,
  * @param[in] r The requestvote response message
  * @return 0 on success */
 int raft_recv_requestvote_response(raft_server_t* me,
-                                   int node,
+                                   raft_node_t* node,
                                    msg_requestvote_response_t* r);
 
 /** Receive an entry message from the client.
@@ -429,7 +429,7 @@ int raft_recv_requestvote_response(raft_server_t* me,
  * @param[out] r The resulting response
  * @return 0 on success, -1 on failure */
 int raft_recv_entry(raft_server_t* me,
-                    int node,
+                    raft_node_t* node,
                     msg_entry_t* ety,
                     msg_entry_response_t *r);
 
@@ -505,7 +505,7 @@ raft_entry_t* raft_get_entry_from_idx(raft_server_t* me, int idx);
 /**
  * @param[in] node The node's index
  * @return node pointed to by node index */
-raft_node_t* raft_get_node(raft_server_t *me, int node);
+raft_node_t* raft_get_node(raft_server_t* me_, const int id);
 
 /**
  * @return number of votes this server has received this election */
@@ -520,6 +520,11 @@ int raft_get_voted_for(raft_server_t* me);
  *   -1 if the leader is unknown */
 int raft_get_current_leader(raft_server_t* me);
 
+/** Get what this node thinks the node of the leader is.
+ * @return node of what this node thinks is the valid leader;
+ *   NULL if the leader is unknown */
+raft_node_t* raft_get_current_leader_node(raft_server_t* me);
+
 /**
  * @return callback user data */
 void* raft_get_udata(raft_server_t* me);
@@ -531,7 +536,7 @@ int raft_get_my_id(raft_server_t* me);
 /** Vote for a server.
  * This should be used to reload persistent state, ie. the voted-for field.
  * @param[in] node The server to vote for */
-void raft_vote(raft_server_t* me, const int node);
+void raft_vote(raft_server_t* me_, raft_node_t* node);
 
 /** Set the current term.
  * This should be used to reload persistent state, ie. the current_term field.
@@ -547,5 +552,13 @@ int raft_append_entry(raft_server_t* me, raft_entry_t* ety);
  * @param[in] r The response we want to check */
 int raft_msg_entry_response_committed(raft_server_t* me_,
                                       const msg_entry_response_t* r);
+
+/** Get node's ID.
+ * @return ID of node */
+int raft_node_get_id(raft_node_t* me_);
+
+/** Tell if the cluster has started or not
+ * @return 1 if the cluster has started */
+int raft_has_started(raft_server_t* me_);
 
 #endif /* RAFT_H_ */
