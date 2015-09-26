@@ -863,6 +863,19 @@ static int __raft_logentry_offer(
         mdb_fatal(e);
     }
 
+    /* So that our entry points to a valid buffer, get the mmap'd buffer.
+     * This is because the currently pointed to buffer is temporary. */
+    e = mdb_get(txn, sv->entries, &key, &val);
+    switch (e)
+    {
+    case 0:
+        break;
+    default:
+        mdb_fatal(e);
+    }
+    ety->data.buf = val.mv_data;
+    ety->data.len = val.mv_size;
+
     e = mdb_txn_commit(txn);
     if (0 != e)
         mdb_fatal(e);
