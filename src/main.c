@@ -821,7 +821,7 @@ static int __raft_logentry_offer(
 
     uv_buf_t bufs[1];
     char buf[RAFT_BUFLEN];
-    __peer_msg_serialize(tpl_map("S(IIII)", ety), bufs, buf);
+    __peer_msg_serialize(tpl_map("S(III)", ety), bufs, buf);
 
     /* 1. put metadata */
     ety_idx <<= 1;
