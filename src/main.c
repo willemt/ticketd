@@ -31,7 +31,18 @@
 #define RAFT_BUFLEN 512
 #define LEADER_URL_LEN 512
 #define IPC_PIPE_NAME "ticketd_ipc"
-#define HTTP_WORKERS 1
+#define HTTP_WORKERS 4
+#define IP_STR_LEN strlen("111.111.111.111")
+
+typedef enum {
+    HANDSHAKE_FAILURE,
+    HANDSHAKE_SUCCESS,
+} handshake_state_e; 
+
+typedef enum {
+    CCHANGE_REMOVE,
+    CCHANGE_ADD,
+} cfg_change_type_e; 
 
 /** Message types used for peer to peer traffic
  * These values are used to identify message types during deserialization */
@@ -40,17 +51,15 @@ typedef enum
     /** Handshake is a special non-raft message type
      * We send a handshake so that we can identify ourselves to our peers */
     MSG_HANDSHAKE,
+    /** Successful responses mean we can start the Raft periodic callback */
     MSG_HANDSHAKE_RESPONSE,
+    /* When instance is ctrl-c'd we have to gracefuly disconnect */
+    MSG_DISCONNECT,
     MSG_REQUESTVOTE,
     MSG_REQUESTVOTE_RESPONSE,
     MSG_APPENDENTRIES,
     MSG_APPENDENTRIES_RESPONSE,
 } peer_message_type_e;
-
-/* typedef struct { */
-/*     int cfg_change; */
-/*     raft_entry_t ety; */
-/* } entry_metadata_t; */
 
 /** Peer protocol handshake
  * Send handshake after connecting so that our peer can identify us */
@@ -58,7 +67,53 @@ typedef struct
 {
     int raft_port;
     int http_port;
+
+    /* my Raft node ID */
+    int node_id;
 } msg_handshake_t;
+
+typedef struct
+{
+    int success;
+
+    /* leader's Raft port */
+    int leader_port;
+
+    /* the responding node's HTTP port */
+    int http_port;
+
+    char leader_host[IP_STR_LEN];
+} msg_handshake_response_t;
+
+typedef struct
+{
+    /* my Raft node ID */
+    int node_id;
+} msg_disconnect_t;
+
+/** Add/remove Raft peer */
+typedef struct
+{
+    /* 1 to add; 0 to remove */
+    int add;
+
+    int raft_port;
+    int http_port;
+
+    /* the node ID of this node */
+    int node_id;
+
+    char host[IP_STR_LEN];
+} entry_cfg_change_t;
+
+typedef struct
+{
+    /* the node ID of this node */
+    int node_id;
+
+    /* to force the struct to have a larger size than a ticket entry */
+    int _padding;
+} entry_cfg_change_add_finalization_t;
 
 typedef struct
 {
@@ -66,6 +121,8 @@ typedef struct
     union
     {
         msg_handshake_t hs;
+        msg_handshake_response_t hsr;
+        msg_disconnect_t dc;
         msg_requestvote_t rv;
         msg_requestvote_response_t rvr;
         msg_appendentries_t ae;
@@ -81,16 +138,19 @@ typedef enum
     CONNECTED,
 } conn_status_e;
 
-typedef struct
+typedef struct peer_connection_s peer_connection_t;
+
+struct peer_connection_s
 {
     /* peer's address */
     struct sockaddr_in addr;
 
-    int http_port;
+    int http_port, raft_port;
 
     /* gather TPL message */
     tpl_gather_t *gt;
 
+    /* tell if we need to connect or not */
     conn_status_e connection_status;
 
     /* peer's raft node_idx */
@@ -110,10 +170,15 @@ typedef struct
     uv_write_t wreq;
 
     uv_loop_t* loop;
-} peer_connection_t;
+
+    peer_connection_t *next;
+};
 
 typedef struct
 {
+    /* the server's node ID */
+    int node_id;
+
     raft_server_t* raft;
 
     /* our raft node index */
@@ -147,14 +212,23 @@ typedef struct
     uv_cond_t appendentries_received;
 
     uv_loop_t peer_loop;
+
+    /* Link list of peer connections */
+    peer_connection_t* conns;
 } server_t;
+
+static int __send_handshake_response(peer_connection_t* conn,
+                                     handshake_state_e success,
+                                     raft_node_t* leader);
 
 options_t opts;
 server_t server;
 server_t *sv = &server;
 
 static peer_connection_t* __new_connection(server_t* sv);
-static int __connect_to_peer(peer_connection_t* conn);
+static void __connect_to_peer(peer_connection_t* conn);
+static void __connect_to_peer_at_host(peer_connection_t* conn, char* host,
+                                      int port);
 static void __start_raft_periodic_timer(server_t* sv);
 
 /** Serialize a peer message using TPL
@@ -268,7 +342,7 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
     uv_mutex_lock(&sv->raft_lock);
 
     msg_entry_response_t r;
-    e = raft_recv_entry(sv->raft, sv->node, &entry, &r);
+    e = raft_recv_entry(sv->raft, &entry, &r);
     if (0 != e)
         return h2oh_respond_with_error(req, 500, "BAD");
 
@@ -324,8 +398,7 @@ static void __on_http_connection(uv_stream_t *listener, const int status)
     if (0 != e)
         uv_fatal(e);
 
-    h2o_socket_t *sock =
-        h2o_uv_socket_create((uv_stream_t*)tcp, (uv_close_cb)free);
+    h2o_socket_t *sock = h2o_uv_socket_create((uv_stream_t*)tcp, (uv_close_cb)free);
     h2o_http1_accept(&sv->ctx, sv->cfg.hosts, sock);
 }
 
@@ -339,6 +412,7 @@ static void __peer_write_cb(uv_write_t *req, int status)
     case 0:
         break;
     case UV__EPIPE:
+        printf("DISCONNECTED!n");
         conn->connection_status = DISCONNECTED;
         break;
     default:
@@ -375,12 +449,13 @@ static int __raft_send_requestvote(
     uv_buf_t bufs[1];
     char buf[RAFT_BUFLEN];
     msg_t msg;
+
+    memset(&msg, 0, sizeof(msg));
     msg.type = MSG_REQUESTVOTE,
     msg.rv = *m;
     __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, buf);
-    conn->wreq.data = conn;
-    e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-    if (-1 == e)
+    e = uv_try_write(conn->stream, bufs, 1);
+    if (e < 0)
         uv_fatal(e);
     return 0;
 }
@@ -431,9 +506,8 @@ static int __raft_send_appendentries(
         assert(0 == e);
         bufs[1].len = sz;
         bufs[1].base = ptr;
-
-        e = uv_write(&conn->wreq, conn->stream, bufs, 2, __peer_write_cb);
-        if (-1 == e)
+        e = uv_try_write(conn->stream, bufs, 2);
+        if (e < 0)
             uv_fatal(e);
 
         tpl_free(tn);
@@ -441,10 +515,70 @@ static int __raft_send_appendentries(
     else
     {
         /* keep alive appendentries only */
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (-1 == e)
+        e = uv_try_write(conn->stream, bufs, 1);
+        if (e < 0)
             uv_fatal(e);
     }
+
+    return 0;
+}
+
+static int __apply_cfg_change(server_t* sv, raft_server_t* raft,
+                              const unsigned char* data)
+{
+    printf("apply cfg change\n");
+    return 0;
+}
+
+static void __delete_connection(server_t* sv, peer_connection_t* conn)
+{
+    peer_connection_t* prev = NULL;
+    if (sv->conns == conn)
+        sv->conns = conn->next;
+    else if (sv->conns != conn)
+    {
+        for (prev = sv->conns; prev->next != conn; prev = prev->next);
+        prev->next = conn->next;
+    }
+    else
+        assert(0);
+
+    // TODO: make sure all resources are freed
+    free(conn);
+}
+
+static peer_connection_t* __find_connection(server_t* sv, const char* host, int raft_port)
+{
+    peer_connection_t* conn;
+    for (conn = sv->conns;
+         conn && (0 != strcmp(host, inet_ntoa(conn->addr.sin_addr)) ||
+                  conn->raft_port != raft_port);
+         conn = conn->next)
+        ;
+    return conn;
+}
+
+static int __offer_cfg_change(server_t* sv, raft_server_t* raft,
+                              const unsigned char* data)
+{
+    entry_cfg_change_t *change = (void*)data;
+
+    peer_connection_t* conn = __find_connection(sv, change->host, change->raft_port);
+    if (!conn)
+    {
+        /* don't add self */
+        if (atoi(opts.raft_port) == change->raft_port &&
+            0 == strcmp(opts.host, change->host))
+            return 0;
+
+        conn = __new_connection(sv);
+        __connect_to_peer_at_host(conn, change->host, change->raft_port);
+    }
+
+    printf("cfg change saved\n");
+    conn->http_port = change->http_port;
+    conn->node = raft_add_non_voting_node(raft, conn, change->node_id, 0);
+    printf("adding %p\n", conn->node);
 
     return 0;
 }
@@ -453,7 +587,8 @@ static int __raft_send_appendentries(
 static int __raft_applylog(
     raft_server_t* raft,
     void *udata,
-    raft_entry_t* ety
+    const unsigned char *data,
+    const int len
     )
 {
     MDB_txn *txn;
@@ -466,16 +601,46 @@ static int __raft_applylog(
     if (0 != e)
         mdb_fatal(e);
 
-    e = mdb_put(txn, sv->tickets, &key, &val, 0);
+    /* Check if configuration change */
+    if (sizeof(entry_cfg_change_t) == len)
+    {
+        __apply_cfg_change(sv, raft, data);
+    }
+    else if (sizeof(entry_cfg_change_add_finalization_t) == len)
+    {
+        /* entry_cfg_change_add_finalization_t *change = (void*)data; */
+        /* raft_node_t *node = raft_get_node(raft, change->node_id); */
+        /* raft_node_set_voting(node, 1); */
+    }
+    else
+    {
+        e = mdb_put(txn, sv->tickets, &key, &val, 0);
+        switch (e)
+        {
+        case 0:
+            break;
+        case MDB_MAP_FULL:
+        {
+            mdb_txn_abort(txn);
+            return -1;
+        }
+        default:
+            mdb_fatal(e);
+        }
+    }
+
+    /* save commit idx */
+    int commit_idx = raft_get_commit_idx(raft);
+    key.mv_size = strlen("commit_idx");
+    key.mv_data = "commit_idx";
+    val.mv_size = sizeof(int);
+    val.mv_data = &commit_idx;
+
+    e = mdb_put(txn, sv->state, &key, &val, 0);
     switch (e)
     {
     case 0:
         break;
-    case MDB_MAP_FULL:
-    {
-        mdb_txn_abort(txn);
-        return -1;
-    }
     default:
         mdb_fatal(e);
     }
@@ -513,6 +678,31 @@ static void __peer_alloc_cb(uv_handle_t* handle, size_t size, uv_buf_t* buf)
 {
     buf->len = size;
     buf->base = malloc(size);
+}
+
+static void __append_cfg_change(server_t* sv,
+                                cfg_change_type_e add,
+                                char* host,
+                                int raft_port, int http_port,
+                                int node_id)
+{
+    entry_cfg_change_t *change = calloc(1, sizeof(*change));
+    change->add = 1;
+    change->raft_port = raft_port;
+    change->http_port = http_port;
+    change->node_id = node_id;
+    strcpy(change->host, host);
+    change->host[IP_STR_LEN - 1] = 0;
+
+    msg_entry_t entry;
+    entry.id = rand();
+    entry.data.buf = (void*)change;
+    entry.data.len = sizeof(*change);
+
+    msg_entry_response_t r;
+    int e = raft_recv_entry(sv->raft, &entry, &r);
+    if (0 != e)
+        assert(0);
 }
 
 /** Deserialize a single log entry from appendentries message */
@@ -558,7 +748,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         uv_buf_t bufs[1];
         char buf[RAFT_BUFLEN], *ptr = buf;
         ptr += __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, ptr);
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
+        /* e = uv_try_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb); */
+        e = uv_try_write(conn->stream, bufs, 1);
         if (e < 0)
             uv_fatal(e);
 
@@ -576,32 +767,90 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     {
     case MSG_HANDSHAKE:
     {
-        int i;
+        printf("got handshake\n");
 
-        /* find raft peer for this connection */
-        for (i = 0; i < raft_get_num_nodes(sv->raft); i++)
+        peer_connection_t* nconn = __find_connection(
+            sv, inet_ntoa(conn->addr.sin_addr), m.hs.raft_port);
+        if (nconn)
+            __delete_connection(sv, nconn);
+
+        conn->connection_status = CONNECTED;
+        conn->http_port = m.hs.http_port;
+        conn->raft_port = m.hs.raft_port;
+
+        raft_node_t* leader = raft_get_current_leader_node(sv->raft);
+
+        /* Is this peer in our configuration already? */
+        raft_node_t* node = raft_get_node(sv->raft, m.hs.node_id);
+
+        /* We don't know this peer... */
+        /* Do we have authority to add this peer? */
+        if (!leader)
         {
-            raft_node_t* node = raft_get_node(sv->raft, i);
-            peer_connection_t* other_conn = raft_node_get_udata(node);
-            if (conn->addr.sin_addr.s_addr ==
-                other_conn->addr.sin_addr.s_addr &&
-                m.hs.raft_port == ntohs(other_conn->addr.sin_port))
+            printf("no leader sorry\n");
+            return __send_handshake_response(conn, HANDSHAKE_FAILURE, NULL);
+        }
+        /* Redirect the peer to the leader */
+        else if (leader != sv->node)
+        {
+            printf("redirecting\n");
+            return __send_handshake_response(conn, HANDSHAKE_FAILURE, leader);
+        }
+        else
+        {
+            if (node)
             {
-                conn->http_port = m.hs.http_port;
+                raft_node_set_udata(node, conn);
                 conn->connection_status = CONNECTED;
                 conn->node = node;
-                conn->addr.sin_port = other_conn->addr.sin_port;
-                if (conn != other_conn)
-                {
-                    raft_node_set_udata(node, conn);
-                    free(other_conn);
-                }
-                // TODO: free libuv resources
-                return 0;
+                printf("in config\n");
+                return __send_handshake_response(conn, HANDSHAKE_SUCCESS, leader);
             }
+
+            printf("appending\n");
+
+            __append_cfg_change(sv, CCHANGE_ADD,
+                                inet_ntoa(conn->addr.sin_addr),
+                                m.hs.raft_port, m.hs.http_port,
+                                m.hs.node_id);
+
+            return __send_handshake_response(conn, HANDSHAKE_SUCCESS, leader);
         }
     }
     break;
+    case MSG_HANDSHAKE_RESPONSE:
+        printf("got response\n");
+
+        if (0 == m.hsr.success)
+        {
+            conn->http_port = m.hsr.http_port;
+
+            /* try to connect to the leader */
+            if (m.hsr.leader_port)
+            {
+                printf("trying other leader: %s %d\n",
+                        m.hsr.leader_host,
+                        m.hsr.leader_port);
+
+                peer_connection_t* nconn =
+                    __find_connection(sv, m.hsr.leader_host, m.hsr.leader_port);
+                if (!nconn)
+                {
+                    nconn = __new_connection(sv);
+                    __connect_to_peer_at_host(nconn, m.hsr.leader_host,
+                                              m.hsr.leader_port);
+                }
+            }
+            else
+            {
+                /* printf("bad response\n"); */
+                /* abort(); */
+            }
+        }
+        break;
+    case MSG_DISCONNECT:
+
+        break;
     case MSG_REQUESTVOTE:
     {
         msg_t msg = { .type = MSG_REQUESTVOTE_RESPONSE };
@@ -609,8 +858,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         /* send response */
         ptr += __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, ptr);
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (-1 == e)
+        e = uv_try_write(conn->stream, bufs, 1);
+        if (e < 0)
             uv_fatal(e);
     }
     break;
@@ -632,8 +881,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         /* send response */
         ptr += __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, ptr);
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (-1 == e)
+        e = uv_try_write(conn->stream, bufs, 1);
+        if (e < 0)
             uv_fatal(e);
         break;
     case MSG_APPENDENTRIES_RESPONSE:
@@ -683,15 +932,54 @@ static void __send_handshake(peer_connection_t* conn)
     msg.type = MSG_HANDSHAKE;
     msg.hs.raft_port = atoi(opts.raft_port);
     msg.hs.http_port = atoi(opts.http_port);
-    __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, buf);
+    msg.hs.node_id = sv->node_id;
+    __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), &bufs[0], buf);
     memset(&conn->wreq, 0, sizeof(uv_write_t));
-    int e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
+    printf("sent handshake\n");
+    int e = uv_try_write(conn->stream, bufs, 1);
     if (e < 0)
         uv_fatal(e);
 }
 
+static int __send_handshake_response(peer_connection_t* conn,
+                                     handshake_state_e success,
+                                     raft_node_t* leader)
+{
+    uv_buf_t bufs[1];
+    char buf[RAFT_BUFLEN];
+    msg_t msg;
+
+    memset(&msg, 0, sizeof(msg));
+    msg.type = MSG_HANDSHAKE_RESPONSE;
+    msg.hsr.success = success;
+    msg.hsr.leader_port = 0;
+
+    if (leader)
+    {
+        peer_connection_t* leader_conn = raft_node_get_udata(leader);
+        if (leader_conn)
+        {
+            msg.hsr.leader_port = leader_conn->raft_port;
+            snprintf(msg.hsr.leader_host, IP_STR_LEN, "%s",
+                     inet_ntoa(leader_conn->addr.sin_addr));
+        }
+    }
+
+    msg.hsr.http_port = atoi(opts.http_port);
+
+    __peer_msg_serialize(tpl_map("S(I$(IIIs))", &msg), bufs, buf);
+
+    printf("hs success: %d\n", msg.hsr.success);
+
+    int e = uv_try_write(conn->stream, bufs, 1);
+    if (e < 0)
+        uv_fatal(e);
+
+    return 0;
+}
+
 /** Raft peer has connected to us.
- * Add them to our list of nodes */
+* Add them to our list of nodes */
 static void __on_peer_connection(uv_stream_t *listener, const int status)
 {
     int e;
@@ -719,8 +1007,6 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
     if (0 != e)
         uv_fatal(e);
 
-    __send_handshake(conn);
-
     e = uv_read_start((uv_stream_t*)tcp, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
         uv_fatal(e);
@@ -745,10 +1031,16 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
 
     __send_handshake(conn);
 
+    int namelen = sizeof(conn->addr);
+    e =
+        uv_tcp_getpeername(req->handle, (struct sockaddr*)&conn->addr,
+                           &namelen);
+    if (0 != e)
+        uv_fatal(e);
+
     /* start reading from peer */
     conn->connection_status = CONNECTED;
-    req->handle->data = req->data;
-    e = uv_read_start(req->handle, __peer_alloc_cb, __peer_read_cb);
+    e = uv_read_start(conn->stream, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
         uv_fatal(e);
 }
@@ -757,11 +1049,13 @@ static peer_connection_t* __new_connection(server_t* sv)
 {
     peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
     conn->loop = &sv->peer_loop;
+    conn->next = sv->conns;
+    sv->conns = conn;
     return conn;
 }
 
 /** Connect to raft peer */
-static int __connect_to_peer(peer_connection_t* conn)
+static void __connect_to_peer(peer_connection_t* conn)
 {
     int e;
 
@@ -776,17 +1070,28 @@ static int __connect_to_peer(peer_connection_t* conn)
 
     uv_connect_t *c = calloc(1, sizeof(uv_connect_t));
     c->data = conn;
+
+    printf("connecting to: %s\n", inet_ntoa(conn->addr.sin_addr));
     e = uv_tcp_connect(c, (uv_tcp_t*)conn->stream,
                        (struct sockaddr*)&conn->addr,
                        __on_connection_accepted_by_peer);
     if (0 != e)
         uv_fatal(e);
+}
 
-    return 0;
+static void __connect_to_peer_at_host(peer_connection_t* conn, char* host,
+                                      int port)
+{
+    conn->raft_port = port;
+    int e = uv_ip4_addr(host, port, &conn->addr);
+    if (0 != e)
+        uv_fatal(e);
+    __connect_to_peer(conn);
 }
 
 /** Raft callback for displaying debugging information */
-void __raft_log(raft_server_t* raft, void *udata, const char *buf)
+void __raft_log(raft_server_t* raft, raft_node_t* node, void *udata,
+                const char *buf)
 {
     if (opts.debug)
         printf("raft: %s\n", buf);
@@ -801,6 +1106,17 @@ static int __raft_logentry_offer(
     )
 {
     MDB_txn *txn;
+
+    if (sizeof(entry_cfg_change_t) == ety->data.len)
+        __offer_cfg_change(sv, raft, ety->data.buf);
+    else if (sizeof(entry_cfg_change_add_finalization_t) == ety->data.len)
+    {
+        entry_cfg_change_add_finalization_t *change = (void*)ety->data.buf;
+        printf("finalizing node: %d\n", change->node_id);
+        raft_node_t *node = raft_get_node(raft, change->node_id);
+        assert(node);
+        raft_node_set_voting(node, 1);
+    }
 
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
     if (0 != e)
@@ -850,23 +1166,32 @@ static int __raft_logentry_offer(
         mdb_fatal(e);
     }
 
-    /* So that our entry points to a valid buffer, get the mmap'd buffer.
-     * This is because the currently pointed to buffer is temporary. */
-    e = mdb_get(txn, sv->entries, &key, &val);
-    switch (e)
-    {
-    case 0:
-        break;
-    default:
-        mdb_fatal(e);
-    }
-    ety->data.buf = val.mv_data;
-    ety->data.len = val.mv_size;
-
     e = mdb_txn_commit(txn);
     if (0 != e)
         mdb_fatal(e);
 
+    /* #<{(| So that our entry points to a valid buffer, get the mmap'd buffer. */
+    /*  * This is because the currently pointed to buffer is temporary. |)}># */
+    /* e = mdb_txn_begin(sv->db_env, NULL, 0, &txn); */
+    /* if (0 != e) */
+    /*     mdb_fatal(e); */
+    /*  */
+    /* e = mdb_get(txn, sv->entries, &key, &val); */
+    /* switch (e) */
+    /* { */
+    /* case 0: */
+    /*     break; */
+    /* default: */
+    /*     mdb_fatal(e); */
+    /* } */
+    /*  */
+    /* e = mdb_txn_commit(txn); */
+    /* if (0 != e) */
+    /*     mdb_fatal(e); */
+    /*  */
+    /* ety->data.buf = val.mv_data; */
+    /* ety->data.len = val.mv_size; */
+    /*  */
     return 0;
 }
 
@@ -903,6 +1228,25 @@ static int __raft_logentry_pop(
     return 0;
 }
 
+static void __raft_node_has_sufficient_logs(
+    raft_server_t* raft,
+    void *user_data,
+    raft_node_t* node)
+{
+    entry_cfg_change_add_finalization_t *change = calloc(1, sizeof(*change));
+    change->node_id = raft_node_get_id(node);
+
+    msg_entry_t entry;
+    entry.id = rand();
+    entry.data.buf = (void*)change;
+    entry.data.len = sizeof(*change);
+
+    msg_entry_response_t r;
+    int e = raft_recv_entry(raft, &entry, &r);
+    if (0 != e)
+        assert(0);
+}
+
 raft_cbs_t raft_funcs = {
     .send_requestvote            = __raft_send_requestvote,
     .send_appendentries          = __raft_send_appendentries,
@@ -912,6 +1256,7 @@ raft_cbs_t raft_funcs = {
     .log_offer                   = __raft_logentry_offer,
     .log_poll                    = __raft_logentry_poll,
     .log_pop                     = __raft_logentry_pop,
+    .node_has_sufficient_logs    = __raft_node_has_sufficient_logs,
     .log                         = __raft_log,
 };
 
@@ -919,6 +1264,12 @@ raft_cbs_t raft_funcs = {
 static void __periodic(uv_timer_t* handle)
 {
     raft_periodic(sv->raft, PERIOD_MSEC);
+
+    int nconn = 0;
+    peer_connection_t* conn;
+    for (conn = sv->conns; conn; conn = conn->next, nconn++)
+        printf("conn: %s:%d\n", inet_ntoa(conn->addr.sin_addr), conn->raft_port);
+    printf("nconn: %d\n", nconn);
 }
 
 /** Load all log entries we have persisted to disk */
@@ -978,6 +1329,11 @@ static void __load_commit_log(server_t* sv)
 
     mdb_cursor_close(curs);
 
+    MDB_val val;
+    mdb_gets(sv->db_env, sv->state, "commit_idx", &val);
+    if (val.mv_data)
+        raft_set_commit_idx(sv->raft, *(int*)val.mv_data);
+
     e = mdb_txn_commit(txn);
     if (0 != e)
         mdb_fatal(e);
@@ -997,6 +1353,15 @@ static void __load_persistent_state(server_t* sv)
     mdb_gets(sv->db_env, sv->state, "term", &val);
     if (val.mv_data)
         raft_set_current_term(sv->raft, *(int*)val.mv_data);
+}
+
+static void __load_settings(server_t* sv)
+{
+    int e;
+
+    e = mdb_gets_int(sv->db_env, sv->state, "id", &sv->node_id);
+    if (-1 == e)
+        abort();
 }
 
 static void __http_worker_start(void* uv_tcp)
@@ -1049,12 +1414,22 @@ static void __start_raft_periodic_timer(server_t* sv)
     raft_set_election_timeout(sv->raft, 1000);
 }
 
+static void __int_handler(int dummy)
+{
+
+}
+
 static void __new_db(server_t* sv)
 {
     mdb_db_env_create(&sv->db_env, 0, opts.path, atoi(opts.db_size));
     mdb_db_create(&sv->entries, sv->db_env, "entries");
     mdb_db_create(&sv->tickets, sv->db_env, "docs");
     mdb_db_create(&sv->state, sv->db_env, "state");
+}
+
+static void __save_id(server_t* sv)
+{
+    mdb_puts_int_commit(sv->db_env, sv->state, "id", sv->node_id);
 }
 
 int main(int argc, char **argv)
@@ -1078,6 +1453,7 @@ int main(int argc, char **argv)
     }
 
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGINT, __int_handler);
 
     uv_loop_t loop;
     e = uv_loop_init(&loop);
@@ -1096,9 +1472,6 @@ int main(int argc, char **argv)
         __drop_db(sv);
         exit(0);
     }
-
-    __load_persistent_state(sv);
-    __load_commit_log(sv);
 
     /* web server for clients */
     h2o_pathconf_t *pathconf;
@@ -1146,36 +1519,55 @@ int main(int argc, char **argv)
     if (0 != e)
         uv_fatal(e);
 
-    /* parse list of raft peers.
-     * attempt connections. */
-    int node_idx = 1;
-    char *tok = opts.PEERS;
-    while ((tok = strsep(&opts.PEERS, ",")) != NULL)
+    if (opts.id)
+        sv->node_id = atoi(opts.id);
+
+    /* create a new cluster */
+    if (opts.new)
     {
+        __drop_db(sv);
+        __new_db(sv);
+        __save_id(sv);
+
+        /* add self */
+        sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
+
+        raft_become_leader(sv->raft);
+        /* The log needs to contain us as the original cfg change */
+        __append_cfg_change(sv, CCHANGE_ADD,
+                            opts.host,
+                            atoi(opts.raft_port),
+                            atoi(opts.http_port),
+                            sv->node_id);
+    }
+    /* Join a new cluster */
+    else if (opts.join)
+    {
+        __drop_db(sv);
+        __new_db(sv);
+        __save_id(sv);
+
+        /* add self */
+        sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
+
         addr_parse_result_t res;
-        parse_addr(tok, strlen(tok), &res);
+        parse_addr(opts.PEER, strlen(opts.PEER), &res);
         res.host[res.host_len] = '\0';
 
         peer_connection_t* conn = __new_connection(sv);
-        conn->node_idx = node_idx;
-        conn->loop = &sv->peer_loop;
-        e = uv_ip4_addr(res.host, atoi(res.port), &conn->addr);
-        if (0 != e)
-            uv_fatal(e);
+        __connect_to_peer_at_host(conn, res.host, atoi(res.port));
+    }
+    /* Reload cluster information and rejoin cluster */
+    else
+    {
+        __load_settings(sv);
 
-        int peer_is_self = (0 == strcmp(opts.host, res.host) &&
-                            opts.raft_port && res.port &&
-                            0 == strcmp(opts.raft_port, res.port));
+        /* add self */
+        sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
 
-        raft_add_node(sv->raft, conn, node_idx, peer_is_self);
-
-        conn->node = raft_get_node(sv->raft, node_idx);
-
-        if (peer_is_self)
-            sv->node = conn->node;
-        else
-            __connect_to_peer(conn);
-        node_idx++;
+        __load_commit_log(sv);
+        raft_apply_all(sv->raft);
+        __load_persistent_state(sv);
     }
 
     __start_raft_periodic_timer(sv);

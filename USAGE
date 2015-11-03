@@ -1,13 +1,16 @@
 ticketd - a unique ticket server
 
 Usage:
-  ticketd PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
+  ticketd [-d | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
+  ticketd new --id ID [-d | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
+  ticketd join PEER --id ID [-d | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
   ticketd drop [-P DB_PATH]
   ticketd --version
   ticketd --help
 
 Options:
   -d --daemonize           Run as a daemon.
+  -I --id ID               This server's manually set Raft ID
   -P --path DB_PATH        Path where database files will be kept [default: store]
   -H --host HOST           Host to listen on [default: 127.0.0.1]
   -p --raft_port PORT      Port for Raft peer traffic [default: 9000]
@@ -19,4 +22,8 @@ Options:
   -h --help                Prints a short usage summary.
 
 Commands:
-  drop                     Delete database
+  new                      Destroy database and create a new cluster
+  join                     Destroy database and join cluster via peer
+  drop                     Destroy database
+
+Without a command, ticketd will reload its database and rejoin the cluster.

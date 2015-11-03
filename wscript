@@ -22,6 +22,7 @@ def build(bld):
     cflags = """
         -Werror=int-to-pointer-cast
         -g
+        -O0
         -Werror=unused-variable
         -Werror=return-type
         -Werror=uninitialized

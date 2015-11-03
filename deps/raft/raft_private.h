@@ -12,13 +12,6 @@
  * @version 0.1
  */
 
-enum {
-    RAFT_STATE_NONE,
-    RAFT_STATE_FOLLOWER,
-    RAFT_STATE_CANDIDATE,
-    RAFT_STATE_LEADER
-};
-
 typedef struct {
     /* Persistent state: */
 
@@ -28,7 +21,7 @@ typedef struct {
 
     /* The candidate the server voted for in its current term,
      * or Nil if it hasn't voted for any.  */
-    raft_node_t* voted_for;
+    int voted_for;
 
     /* the log which is replicated */
     void* log;
@@ -63,14 +56,9 @@ typedef struct {
 
     /* my node ID */
     raft_node_t* node;
-
-    /** 1 if there is a configuration change in progress */
-    int cfg_inprogress;
 } raft_server_private_t;
 
 void raft_election_start(raft_server_t* me);
-
-void raft_become_leader(raft_server_t* me);
 
 void raft_become_candidate(raft_server_t* me);
 
@@ -99,12 +87,10 @@ int raft_apply_entry(raft_server_t* me_);
  * @return 0 if unsuccessful */
 int raft_append_entry(raft_server_t* me_, raft_entry_t* c);
 
-void raft_set_commit_idx(raft_server_t* me, int commit_idx);
-int raft_get_commit_idx(raft_server_t* me_);
-
 void raft_set_last_applied_idx(raft_server_t* me, int idx);
 
 void raft_set_state(raft_server_t* me_, int state);
+
 int raft_get_state(raft_server_t* me_);
 
 raft_node_t* raft_node_new(void* udata, int id);
@@ -118,6 +104,10 @@ int raft_node_get_match_idx(raft_node_t* me_);
 void raft_node_vote_for_me(raft_node_t* me_, const int vote);
 
 int raft_node_has_vote_for_me(raft_node_t* me_);
+
+void raft_node_set_has_sufficient_logs(raft_node_t* me_);
+
+int raft_node_has_sufficient_logs(raft_node_t* me_);
 
 int raft_votes_is_majority(const int nnodes, const int nvotes);
 

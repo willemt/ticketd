@@ -11,6 +11,13 @@
 #ifndef RAFT_H_
 #define RAFT_H_
 
+typedef enum {
+    RAFT_STATE_NONE,
+    RAFT_STATE_FOLLOWER,
+    RAFT_STATE_CANDIDATE,
+    RAFT_STATE_LEADER
+} raft_state_e;
+
 typedef struct
 {
     void *buf;
@@ -161,17 +168,31 @@ typedef int (
     msg_appendentries_t* msg
     );
 
+/** Callback for detecting when non-voting nodes have obtained enough logs.
+ * @param[in] raft The Raft server making this callback
+ * @param[in] user_data User data that is passed from Raft server
+ * @param[in] node The node */
+typedef void (
+*func_node_has_sufficient_logs_f
+)   (
+    raft_server_t* raft,
+    void *user_data,
+    raft_node_t* node
+    );
+
 #ifndef HAVE_FUNC_LOG
 #define HAVE_FUNC_LOG
 /** Callback for providing debug logging information.
  * This callback is optional
  * @param[in] raft The Raft server making this callback
+ * @param[in] node The node that is the subject of this log. Could be NULL.
  * @param[in] user_data User data that is passed from Raft server
  * @param[in] buf The buffer that was logged */
 typedef void (
 *func_log_f
 )    (
     raft_server_t* raft,
+    raft_node_t* node,
     void *user_data,
     const char *buf
     );
@@ -180,14 +201,16 @@ typedef void (
 /** Callback for applying this log entry to the state machine.
  * @param[in] raft The Raft server making this callback
  * @param[in] user_data User data that is passed from Raft server
- * @param[in] ety The log entry
+ * @param[in] data Data to be applied to the log
+ * @param[in] len Length in bytes of data to be applied
  * @return 0 on success */
 typedef int (
 *func_applylog_f
 )   (
     raft_server_t* raft,
     void *user_data,
-    raft_entry_t* ety
+    const unsigned char *log_data,
+    const int log_len
     );
 
 /** Callback for saving who we voted for to disk.
@@ -231,22 +254,6 @@ typedef int (
     int entry_idx
     );
 
-/** Callback for sending log entry messages.
- * This callback is optional.
- * @param[in] raft The Raft server making this callback
- * @param[in] user_data User data that is passed from Raft server
- * @param[in] node The node's ID that we are sending this message to
- * @param[in] msg The entry message to be sent
- * @return 0 on success */
-typedef int (
-*func_send_entry_f
-)   (
-    raft_server_t* raft,
-    void *user_data,
-    int node,
-    msg_entry_t* msg
-    );
-
 typedef struct
 {
     /** Callback for sending request vote messages */
@@ -281,6 +288,9 @@ typedef struct
      * @note If memory was malloc'd in log_offer then this should be the right
      *  time to free the memory. */
     func_logentry_event_f log_pop;
+
+    /** Callback for detecting when a non-voting node has sufficient logs. */
+    func_node_has_sufficient_logs_f node_has_sufficient_logs;
 
     /** Callback for catching debugging log messages
      * This callback is optional */
@@ -331,15 +341,14 @@ void raft_set_callbacks(raft_server_t* me, raft_cbs_t* funcs, void* user_data);
  * @param[in] id The integer ID of this node
  *  This is used for identifying clients across sessions.
  * @param[in] is_self Set to 1 if this "node" is this server
- * @param[out] r If the cluster has started, an entry will be sent to the
- *  leader so that we can have the membership change committed. We can check
- *  this entry response with raft_msg_entry_response_committed to confirm if
- *  it has been committed. If the cluster has not started it is safe to pass
- *  NULL.
  * @return 0 on success; otherwise -1 */
-int raft_add_node(raft_server_t* me, void* user_data, int id, int is_self);
+raft_node_t* raft_add_node(raft_server_t* me, void* user_data, int id, int is_self);
 
 #define raft_add_peer raft_add_node
+
+/** Add a node which does not participate in voting.
+ * Parameters are identical to raft_add_node */
+raft_node_t* raft_add_non_voting_node(raft_server_t* me_, void* udata, int id, int is_self);
 
 /** Set election timeout.
  * The amount of time that needs to elapse before we assume the leader is down
@@ -429,7 +438,6 @@ int raft_recv_requestvote_response(raft_server_t* me,
  * @param[out] r The resulting response
  * @return 0 on success, -1 on failure */
 int raft_recv_entry(raft_server_t* me,
-                    raft_node_t* node,
                     msg_entry_t* ety,
                     msg_entry_response_t *r);
 
@@ -456,6 +464,10 @@ int raft_get_current_term(raft_server_t* me);
 /**
  * @return current log index */
 int raft_get_current_idx(raft_server_t* me);
+
+/**
+ * @return commit index */
+int raft_get_commit_idx(raft_server_t* me_);
 
 /**
  * @return 1 if follower; 0 otherwise */
@@ -491,6 +503,10 @@ int raft_node_get_next_idx(raft_node_t* node);
 
 /**
  * @return this node's user data */
+int raft_node_get_match_idx(raft_node_t* me);
+
+/**
+ * @return this node's user data */
 void* raft_node_get_udata(raft_node_t* me);
 
 /**
@@ -503,9 +519,15 @@ void raft_node_set_udata(raft_node_t* me, void* user_data);
 raft_entry_t* raft_get_entry_from_idx(raft_server_t* me, int idx);
 
 /**
- * @param[in] node The node's index
- * @return node pointed to by node index */
+ * @param[in] node The node's ID
+ * @return node pointed to by node ID */
 raft_node_t* raft_get_node(raft_server_t* me_, const int id);
+
+/**
+ * Used for iterating through nodes
+ * @param[in] node The node's idx
+ * @return node pointed to by node idx */
+raft_node_t* raft_get_node_from_idx(raft_server_t* me_, const int idx);
 
 /**
  * @return number of votes this server has received this election */
@@ -538,10 +560,20 @@ int raft_get_my_id(raft_server_t* me);
  * @param[in] node The server to vote for */
 void raft_vote(raft_server_t* me_, raft_node_t* node);
 
+/** Vote for a server.
+ * This should be used to reload persistent state, ie. the voted-for field.
+ * @param[in] nodeid The server to vote for by nodeid */
+void raft_vote_for_nodeid(raft_server_t* me_, const int nodeid);
+
 /** Set the current term.
  * This should be used to reload persistent state, ie. the current_term field.
  * @param[in] term The new current term */
 void raft_set_current_term(raft_server_t* me, const int term);
+
+/** Set the commit idx.
+ * This should be used to reload persistent state, ie. the commit_idx field.
+ * @param[in] commit_idx The new commit index. */
+void raft_set_commit_idx(raft_server_t* me, int commit_idx);
 
 /** Add an entry to the server's log.
  * This should be used to reload persistent state, ie. the commit log.
@@ -557,8 +589,37 @@ int raft_msg_entry_response_committed(raft_server_t* me_,
  * @return ID of node */
 int raft_node_get_id(raft_node_t* me_);
 
-/** Tell if the cluster has started or not
- * @return 1 if the cluster has started */
-int raft_has_started(raft_server_t* me_);
+/** Tell if we are a leader, candidate or follower.
+ * @return get state of type raft_state_e. */
+int raft_get_state(raft_server_t* me_);
+
+/** The most recent log's term
+ * @return the last log term */
+int raft_get_last_log_term(raft_server_t* me_);
+
+/** Tell if we are a leader, candidate or follower.
+ * @return get state of type raft_state_e. */
+int raft_get_state(raft_server_t* me_);
+
+/** The most recent log's term
+ * @return the last log term */
+int raft_get_last_log_term(raft_server_t* me_);
+
+/** Turn a node into a voting node.
+ * Voting nodes can take part in elections and in-regards to commiting entries,
+ * are counted in majorities. */
+void raft_node_set_voting(raft_node_t* node, int voting);
+
+/** Tell if a node is a voting node or not.
+ * @return 1 if this is a voting node. Otherwise 0. */
+int raft_node_is_voting(raft_node_t* me_);
+
+/** Apply all entries up to the commit index */
+void raft_apply_all(raft_server_t* me_);
+
+/** Become leader
+ * WARNING: this is a dangerous function call. It could lead to your cluster
+ * losing it's consensus guarantees. */
+void raft_become_leader(raft_server_t* me);
 
 #endif /* RAFT_H_ */

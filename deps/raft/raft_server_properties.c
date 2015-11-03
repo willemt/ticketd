@@ -66,17 +66,19 @@ int raft_get_log_count(raft_server_t* me_)
 int raft_get_voted_for(raft_server_t* me_)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    if (me->voted_for)
-        return raft_node_get_id(me->voted_for);
-    return -1;
+    return me->voted_for;
 }
 
 void raft_set_current_term(raft_server_t* me_, const int term)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
-    me->current_term = term;
-    if (me->cb.persist_term)
-        me->cb.persist_term(me_, me->udata, term);
+    if (me->current_term < term)
+    {
+        me->current_term = term;
+        me->voted_for = -1;
+        if (me->cb.persist_term)
+            me->cb.persist_term(me_, me->udata, term);
+    }
 }
 
 int raft_get_current_term(raft_server_t* me_)
@@ -93,6 +95,8 @@ int raft_get_current_idx(raft_server_t* me_)
 void raft_set_commit_idx(raft_server_t* me_, int idx)
 {
     raft_server_private_t* me = (raft_server_private_t*)me_;
+    assert(me->commit_idx <= idx);
+    assert(idx <= raft_get_current_idx(me_));
     me->commit_idx = idx;
 }
 
@@ -131,11 +135,17 @@ raft_node_t* raft_get_node(raft_server_t *me_, int nodeid)
     raft_server_private_t* me = (raft_server_private_t*)me_;
     int i;
 
-    for (i=0; i<me->num_nodes; i++)
+    for (i = 0; i < me->num_nodes; i++)
         if (nodeid == raft_node_get_id(me->nodes[i]))
             return me->nodes[i];
 
     return NULL;
+}
+
+raft_node_t* raft_get_node_from_idx(raft_server_t* me_, const int idx)
+{
+    raft_server_private_t* me = (raft_server_private_t*)me_;
+    return me->nodes[idx];
 }
 
 int raft_get_current_leader(raft_server_t* me_)
@@ -170,4 +180,16 @@ int raft_is_leader(raft_server_t* me_)
 int raft_is_candidate(raft_server_t* me_)
 {
     return raft_get_state(me_) == RAFT_STATE_CANDIDATE;
+}
+
+int raft_get_last_log_term(raft_server_t* me_)
+{
+    int current_idx = raft_get_current_idx(me_);
+    if (0 < current_idx)
+    {
+        raft_entry_t* ety = raft_get_entry_from_idx(me_, current_idx);
+        if (ety)
+            return ety->term;
+    }
+    return 0;
 }
