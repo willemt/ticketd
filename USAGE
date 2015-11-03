@@ -1,9 +1,10 @@
-kippud - a unique ticket server
+ticketd - a unique ticket server
 
 Usage:
-  kippud PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE]
-  kippud --version
-  kippud --help
+  ticketd PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE]
+  ticketd drop
+  ticketd --version
+  ticketd --help
 
 Options:
   -d --daemonize           Run as a daemon.
@@ -15,3 +16,6 @@ Options:
   -i --pid_file PID_FILE   Pid file [default: /var/run/pearl.pid]
   -v --version             Display version.
   -h --help                Prints a short usage summary.
+
+Commands:
+  drop                     Delete database

@@ -1068,6 +1068,38 @@ int main(int argc, char **argv)
     mdb_db_create(&sv->tickets, sv->db_env, "docs");
     mdb_db_create(&sv->state, sv->db_env, "state");
 
+    if (opts.drop)
+    {
+        MDB_txn *txn;
+
+        int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
+        if (0 != e)
+            mdb_fatal(e);
+
+        e = mdb_drop(txn, sv->entries, 1);
+        if (0 != e)
+            mdb_fatal(e);
+
+        e = mdb_drop(txn, sv->tickets, 1);
+        if (0 != e)
+            mdb_fatal(e);
+
+        e = mdb_drop(txn, sv->state, 1);
+        if (0 != e)
+            mdb_fatal(e);
+
+        e = mdb_txn_commit(txn);
+        if (0 != e)
+            mdb_fatal(e);
+
+        mdb_dbi_close(sv->db_env, sv->entries);
+        mdb_dbi_close(sv->db_env, sv->tickets);
+        mdb_dbi_close(sv->db_env, sv->state);
+        mdb_env_close(sv->db_env);
+
+        exit(0);
+    }
+
     __load_persistent_state();
     __load_commit_log();
 
