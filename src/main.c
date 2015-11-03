@@ -364,10 +364,9 @@ static int __raft_send_requestvote(
 
     uv_buf_t bufs[1];
     char buf[RAFT_BUFLEN];
-    msg_t msg = {
-        .type              = MSG_REQUESTVOTE,
-        .rv                = *m
-    };
+    msg_t msg;
+    msg.type = MSG_REQUESTVOTE,
+    msg.rv = *m;
     __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, buf);
     conn->write.data = conn;
     e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
@@ -394,16 +393,13 @@ static int __raft_send_appendentries(
         return 0;
 
     char buf[RAFT_BUFLEN], *ptr = buf;
-    msg_t msg = {
-        .type              = MSG_APPENDENTRIES,
-        .ae                = {
-            .term          = m->term,
-            .prev_log_idx  = m->prev_log_idx,
-            .prev_log_term = m->prev_log_term,
-            .leader_commit = m->leader_commit,
-            .n_entries     = m->n_entries
-        }
-    };
+    msg_t msg;
+    msg.type = MSG_APPENDENTRIES;
+    msg.ae.term = m->term;
+    msg.ae.prev_log_idx   = m->prev_log_idx;
+    msg.ae.prev_log_term = m->prev_log_term;
+    msg.ae.leader_commit = m->leader_commit;
+    msg.ae.n_entries = m->n_entries;
     ptr += __peer_msg_serialize(tpl_map("S(I$(IIIII))", &msg), bufs, ptr);
 
     /* appendentries with payload */
@@ -1022,10 +1018,7 @@ static void __load_persistent_state()
 
 static void __http_worker_start(void* uv_tcp)
 {
-    assert(uv_tcp);
-
     uv_tcp_t* listener = uv_tcp;
-    //_thread_t* thread = listener->data;
 
     h2o_context_init(&sv->ctx, listener->loop, &sv->cfg);
 
