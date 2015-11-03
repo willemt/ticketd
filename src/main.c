@@ -109,26 +109,34 @@ typedef struct
 {
     raft_server_t* raft;
 
-    /* our raft node index */
+    /* Our raft node index */
     int node_idx;
 
-    /* set of tickets that have been issued */
+    /* Set of tickets that have been issued
+     * We store unsigned ints in here */
     MDB_dbi tickets;
 
-    /* persistent state for voted_for and term */
+    /* Persistent state for voted_for and term
+     * We store string keys (eg. "term") with int values */
     MDB_dbi state;
 
-    /* entries that have been appended to our log */
+    /* Entries that have been appended to our log
+     * For each log entry we store two things next to each other:
+     *  - TPL serialized raft_entry_t
+     *  - raft_entry_data_t */
     MDB_dbi entries;
 
+    /* LMDB database environment */
     MDB_env *db_env;
 
     h2o_globalconf_t cfg;
     h2o_context_t ctx;
 
+    /* Raft isn't mutli-threaded, therefore we use a global lock when accessing
+     * the library */
     uv_mutex_t raft_lock;
 
-    /* when we receive an entry from the client we need to block until the 
+    /* When we receive an entry from the client we need to block until the 
      * entry has been committed. This condition is used to wake us up. */
     uv_cond_t appendentries_received;
 } server_t;
