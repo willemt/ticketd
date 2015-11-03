@@ -49,7 +49,7 @@ typedef enum
  * Send handshake after connecting so that our peer can identify us */
 typedef struct
 {
-    int peer_port;
+    int raft_port;
     int http_port;
 } msg_handshake_t;
 
@@ -620,7 +620,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
             peer_connection_t* other_conn = raft_node_get_udata(node);
             if (conn->addr.sin_addr.s_addr ==
                 other_conn->addr.sin_addr.s_addr &&
-                m.hs.peer_port == ntohs(other_conn->addr.sin_port))
+                m.hs.raft_port == ntohs(other_conn->addr.sin_port))
             {
                 conn->http_port = m.hs.http_port;
                 conn->connection_status = CONNECTED;
@@ -714,7 +714,7 @@ static void __send_handshake(peer_connection_t* conn)
     char buf[RAFT_BUFLEN];
     msg_t msg;
     msg.type = MSG_HANDSHAKE;
-    msg.hs.peer_port = atoi(opts.peer_port);
+    msg.hs.raft_port = atoi(opts.raft_port);
     msg.hs.http_port = atoi(opts.http_port);
     __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, buf);
     int e = uv_write(&conn->write, conn->stream, bufs, 1, __peer_write_cb);
@@ -1131,8 +1131,8 @@ int main(int argc, char **argv)
             uv_fatal(e);
 
         int peer_is_self = (0 == strcmp(opts.host, res.host) &&
-                            opts.peer_port && res.port &&
-                            0 == strcmp(opts.peer_port, res.port));
+                            opts.raft_port && res.port &&
+                            0 == strcmp(opts.raft_port, res.port));
 
         if (peer_is_self)
             sv->node_idx = node_idx;
@@ -1145,7 +1145,7 @@ int main(int argc, char **argv)
 
     /* listen socket for raft peer traffic */
     uv_tcp_t peer_listen;
-    uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.peer_port), &peer_loop);
+    uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.raft_port), &peer_loop);
     e = uv_listen((uv_stream_t*)&peer_listen, MAX_PEER_CONNECTIONS,
                   __on_peer_connection);
     if (0 != e)
