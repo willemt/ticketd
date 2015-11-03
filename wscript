@@ -17,6 +17,8 @@ def configure(conf):
 def build(bld):
     bld.load('clib')
 
+    includes = []
+
     cflags = """
         -Werror=int-to-pointer-cast
         -g
@@ -28,11 +30,18 @@ def build(bld):
 
     lib = ['uv', 'h2o', 'ssl', 'crypto']
 
+    libpath = [os.getcwd()]
+
     if sys.platform == 'darwin':
         cflags.extend("""
             -fcolor-diagnostics
             -fdiagnostics-color
             """.split())
+
+        # Added due to El Capitan changes
+        includes.append('/usr/local/opt/openssl/include')
+        libpath.append('/usr/local/opt/openssl/lib')
+
     elif sys.platform.startswith('linux'):
         cflags.extend("""
             -DLINUX
@@ -65,9 +74,9 @@ def build(bld):
         source="""
         src/main.c
         """.split() + bld.clib_c_files(clibs),
-        includes=['./include'] + bld.clib_h_paths(clibs) + h2o_includes + uv_includes,
+        includes=['./include'] + includes + bld.clib_h_paths(clibs) + h2o_includes + uv_includes,
         target='ticketd',
         stlibpath=['.'],
-        libpath=[os.getcwd()],
+        libpath=libpath,
         lib=lib,
         cflags=cflags)
