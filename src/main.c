@@ -145,7 +145,7 @@ options_t opts;
 server_t server;
 server_t *sv = &server;
 
-static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop);
+static int __connect_to_peer(peer_connection_t* conn);
 
 /** Serialize a peer message using TPL
  * @param[out] bufs libuv buffer to insert serialized message into
@@ -341,7 +341,7 @@ static int __connect_if_needed(peer_connection_t* conn)
     if (CONNECTED != conn->connection_status)
     {
         if (DISCONNECTED == conn->connection_status)
-            __connect_to_peer(conn, conn->loop);
+            __connect_to_peer(conn);
         return -1;
     }
     return 0;
@@ -786,14 +786,14 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
 }
 
 /** Connect to raft peer */
-static int __connect_to_peer(peer_connection_t* conn, uv_loop_t* loop)
+static int __connect_to_peer(peer_connection_t* conn)
 {
     int e;
 
     conn->stream = malloc(sizeof(uv_tcp_t));
     conn->stream->data = conn;
     conn->connection_status = CONNECTING;
-    e = uv_tcp_init(loop, (uv_tcp_t*)conn->stream);
+    e = uv_tcp_init(conn->loop, (uv_tcp_t*)conn->stream);
     if (0 != e)
         uv_fatal(e);
 
@@ -1138,7 +1138,7 @@ int main(int argc, char **argv)
         if (peer_is_self)
             sv->node_idx = node_idx;
         else
-            __connect_to_peer(conn, conn->loop);
+            __connect_to_peer(conn);
 
         raft_add_node(sv->raft, conn, peer_is_self);
         node_idx++;
