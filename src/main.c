@@ -227,7 +227,7 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
     else if (leader != sv->node_idx)
     {
         raft_node_t* node = raft_get_node(sv->raft, leader);
-        peer_connection_t* conn = raft_node_get_udata(node);
+        peer_connection_t* leader_conn = raft_node_get_udata(node);
         char leader_url[LEADER_URL_LEN];
 
         static h2o_generator_t generator = { NULL, NULL };
@@ -236,7 +236,8 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
         req->res.reason = "Moved Permanently";
         h2o_start_response(req, &generator);
         snprintf(leader_url, LEADER_URL_LEN, "http://%s:%d/",
-                 inet_ntoa(conn->addr.sin_addr), conn->http_port);
+                 inet_ntoa(leader_conn->addr.sin_addr),
+                 leader_conn->http_port);
         h2o_add_header(&req->pool,
                        &req->res.headers,
                        H2O_TOKEN_LOCATION,
