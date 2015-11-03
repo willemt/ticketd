@@ -347,7 +347,7 @@ static int __connect_if_needed(peer_connection_t* conn)
 }
 
 /** Raft callback for sending request vote message */
-static int __send_requestvote(
+static int __raft_send_requestvote(
     raft_server_t* raft,
     void *user_data,
     int nodeidx,
@@ -376,7 +376,7 @@ static int __send_requestvote(
 }
 
 /** Raft callback for sending appendentries message */
-static int __send_appendentries(
+static int __raft_send_appendentries(
     raft_server_t* raft,
     void *user_data,
     int nodeidx,
@@ -441,7 +441,7 @@ static int __send_appendentries(
 }
 
 /** Raft callback for applying an entry to the finite state machine */
-static int __applylog(
+static int __raft_applylog(
     raft_server_t* raft,
     void *udata,
     const unsigned char *data,
@@ -480,7 +480,7 @@ static int __applylog(
 
 /** Raft callback for saving term field to disk.
  * This only returns when change has been made to disk. */
-static int __persist_term(
+static int __raft_persist_term(
     raft_server_t* raft,
     void *udata,
     const int current_term
@@ -514,7 +514,7 @@ static int __persist_term(
 
 /** Raft callback for saving voted_for field to disk.
  * This only returns when change has been made to disk. */
-static int __persist_vote(
+static int __raft_persist_vote(
     raft_server_t* raft,
     void *udata,
     const int voted_for
@@ -925,11 +925,11 @@ static int __raft_logentry_pop(
 }
 
 raft_cbs_t raft_funcs = {
-    .send_requestvote            = __send_requestvote,
-    .send_appendentries          = __send_appendentries,
-    .applylog                    = __applylog,
-    .persist_vote                = __persist_vote,
-    .persist_term                = __persist_term,
+    .send_requestvote            = __raft_send_requestvote,
+    .send_appendentries          = __raft_send_appendentries,
+    .applylog                    = __raft_applylog,
+    .persist_vote                = __raft_persist_vote,
+    .persist_term                = __raft_persist_term,
     .log_offer                   = __raft_logentry_offer,
     .log_poll                    = __raft_logentry_poll,
     .log_pop                     = __raft_logentry_pop,
