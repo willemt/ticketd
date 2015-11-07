@@ -851,8 +851,8 @@ static int __raft_logentry_offer(
     ety_idx |= 1;
     key.mv_size = sizeof(ety_idx);
     key.mv_data = (void*)&ety_idx;
-    val.mv_size = bufs->len;
-    val.mv_data = bufs->base;
+    val.mv_size = ety->data.len;
+    val.mv_data = ety->data.buf;
 
     e = mdb_put(txn, sv->entries, &key, &val, 0);
     switch (e)
