@@ -16,10 +16,7 @@ Warning
 
 *This is experimental!*
 
-Among the many memory leaks, two key raft related features are still in-progress:
-
-* Saving persistent state
-* Dynamic membership changes
+Among the memory leaks, dynamic membership changes are not yet supported.
 
 How?
 ====
