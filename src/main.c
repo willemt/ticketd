@@ -31,6 +31,7 @@
 #define LEADER_URL_LEN 512
 #define IPC_PIPE_NAME "ticketd_ipc"
 #define HTTP_WORKERS 1
+#define len(x) (sizeof((x)) / sizeof((x)[0]))
 
 /** Message types used for peer to peer traffic
  * These values are used to identify message types during deserialization */
@@ -1030,6 +1031,32 @@ static void __http_worker_start(void* uv_tcp)
         uv_run(listener->loop, UV_RUN_DEFAULT);
 }
 
+static void __drop(server_t* sv)
+{
+    MDB_txn *txn;
+    MDB_dbi dbs[] = { sv->entries, sv->tickets, sv->state };
+    int i, e;
+
+    e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    for (i = 0; i < len(dbs); i++)
+    {
+        e = mdb_drop(txn, dbs[i], 1);
+        if (0 != e)
+            mdb_fatal(e);
+    }
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    for (i = 0; i < len(dbs); i++)
+        mdb_dbi_close(sv->db_env, dbs[i]);
+    mdb_env_close(sv->db_env);
+}
+
 int main(int argc, char **argv)
 {
     int e, i;
@@ -1060,8 +1087,6 @@ int main(int argc, char **argv)
 
     srand(time(NULL));
 
-    // TODO: add option for dropping persisted data
-
     /* ticket DB */
     mdb_db_env_create(&sv->db_env, 0, opts.path, atoi(opts.db_size));
     mdb_db_create(&sv->entries, sv->db_env, "entries");
@@ -1070,33 +1095,7 @@ int main(int argc, char **argv)
 
     if (opts.drop)
     {
-        MDB_txn *txn;
-
-        int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
-        if (0 != e)
-            mdb_fatal(e);
-
-        e = mdb_drop(txn, sv->entries, 1);
-        if (0 != e)
-            mdb_fatal(e);
-
-        e = mdb_drop(txn, sv->tickets, 1);
-        if (0 != e)
-            mdb_fatal(e);
-
-        e = mdb_drop(txn, sv->state, 1);
-        if (0 != e)
-            mdb_fatal(e);
-
-        e = mdb_txn_commit(txn);
-        if (0 != e)
-            mdb_fatal(e);
-
-        mdb_dbi_close(sv->db_env, sv->entries);
-        mdb_dbi_close(sv->db_env, sv->tickets);
-        mdb_dbi_close(sv->db_env, sv->state);
-        mdb_env_close(sv->db_env);
-
+        __drop(sv);
         exit(0);
     }
 
