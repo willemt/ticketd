@@ -133,8 +133,7 @@ typedef struct
     h2o_globalconf_t cfg;
     h2o_context_t ctx;
 
-    /* Raft isn't mutli-threaded, therefore we use a global lock when accessing
-     * the library */
+    /* Raft isn't multi-threaded, therefore we use a global lock */
     uv_mutex_t raft_lock;
 
     /* When we receive an entry from the client we need to block until the 
