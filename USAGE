@@ -2,7 +2,7 @@ ticketd - a unique ticket server
 
 Usage:
   ticketd PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE]
-  ticketd drop
+  ticketd drop [-P DB_PATH]
   ticketd --version
   ticketd --help
 

@@ -385,7 +385,7 @@ static void show_usage()
     fprintf(stdout, "\n");
     fprintf(stdout, "Usage:\n");
     fprintf(stdout, "  ticketd PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE]\n");
-    fprintf(stdout, "  ticketd drop\n");
+    fprintf(stdout, "  ticketd drop [-P DB_PATH]\n");
     fprintf(stdout, "  ticketd --version\n");
     fprintf(stdout, "  ticketd --help\n");
     fprintf(stdout, "\n");
