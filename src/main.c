@@ -147,6 +147,7 @@ options_t opts;
 server_t server;
 server_t *sv = &server;
 
+static peer_connection_t* __new_connection(server_t* sv);
 static int __connect_to_peer(peer_connection_t* conn);
 static void __start_raft_periodic_timer(server_t* sv);
 
@@ -706,7 +707,7 @@ static void __on_peer_connection(uv_stream_t *listener, const int status)
     if (0 != e)
         uv_fatal(e);
 
-    peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
+    peer_connection_t* conn = __new_connection(sv);
     conn->node_idx = -1;
     conn->loop = listener->loop;
     conn->stream = (uv_stream_t*)tcp;
@@ -749,6 +750,13 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
     e = uv_read_start(req->handle, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
         uv_fatal(e);
+}
+
+static peer_connection_t* __new_connection(server_t* sv)
+{
+    peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
+    conn->loop = &sv->peer_loop;
+    return conn;
 }
 
 /** Connect to raft peer */
@@ -1146,7 +1154,7 @@ int main(int argc, char **argv)
         parse_addr(tok, strlen(tok), &res);
         res.host[res.host_len] = '\0';
 
-        peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
+        peer_connection_t* conn = __new_connection(sv);
         conn->node_idx = node_idx;
         conn->loop = &sv->peer_loop;
         e = uv_ip4_addr(res.host, atoi(res.port), &conn->addr);
