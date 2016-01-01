@@ -21,6 +21,12 @@ size_t mdb_env_get_mapsize(MDB_env *env);
 
 void mdb_gets(MDB_env *env, MDB_dbi dbi, char* keystr, MDB_val* val);
 
+int mdb_gets_int(MDB_env *env, MDB_dbi dbi, char* keystr, int *out);
+
+int mdb_puts_int(MDB_txn *txn, MDB_dbi dbi, char* keystr, int in);
+
+int mdb_puts_int_commit(MDB_env *env, MDB_dbi dbi, char* keystr, int in);
+
 /**
  * Delete the first item */
 int mdb_poll(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v);

@@ -1,0 +1,8 @@
+{
+  "name": "arraytools",
+  "version": "0.0.1",
+  "repo": "willemt/arraytools",
+  "keywords": ["array"],
+  "license": "public domain",
+  "src": ["arraytools.h"]
+}

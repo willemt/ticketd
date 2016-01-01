@@ -17,6 +17,7 @@
 #include "uv_helpers.h"
 #include "uv_multiplex.h"
 #include "tpl.h"
+#include "arraytools.h"
 
 #include "usage.c"
 #include "parse_addr.c"
@@ -31,7 +32,6 @@
 #define LEADER_URL_LEN 512
 #define IPC_PIPE_NAME "ticketd_ipc"
 #define HTTP_WORKERS 1
-#define len(x) (sizeof((x)) / sizeof((x)[0]))
 
 /** Message types used for peer to peer traffic
  * These values are used to identify message types during deserialization */
@@ -139,6 +139,8 @@ typedef struct
     /* When we receive an entry from the client we need to block until the 
      * entry has been committed. This condition is used to wake us up. */
     uv_cond_t appendentries_received;
+
+    uv_loop_t peer_loop;
 } server_t;
 
 options_t opts;
@@ -146,6 +148,7 @@ server_t server;
 server_t *sv = &server;
 
 static int __connect_to_peer(peer_connection_t* conn);
+static void __start_raft_periodic_timer(server_t* sv);
 
 /** Serialize a peer message using TPL
  * @param[out] bufs libuv buffer to insert serialized message into
@@ -394,6 +397,8 @@ static int __raft_send_appendentries(
 
     char buf[RAFT_BUFLEN], *ptr = buf;
     msg_t msg;
+
+    memset(&msg, 0, sizeof(msg));
     msg.type = MSG_APPENDENTRIES;
     msg.ae.term = m->term;
     msg.ae.prev_log_idx   = m->prev_log_idx;
@@ -447,12 +452,13 @@ static int __raft_applylog(
 {
     MDB_txn *txn;
 
+    MDB_val key = { .mv_size = len, .mv_data = (void*)data };
+    MDB_val val = { .mv_size = 0, .mv_data = "\0" };
+
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
     if (0 != e)
         mdb_fatal(e);
 
-    MDB_val key = { .mv_size = len, .mv_data = (void*)data };
-    MDB_val val = { .mv_size = 0, .mv_data = "\0" };
 
     e = mdb_put(txn, sv->tickets, &key, &val, 0);
     switch (e)
@@ -483,30 +489,7 @@ static int __raft_persist_term(
     const int current_term
     )
 {
-    MDB_txn *txn;
-
-    int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
-    if (0 != e)
-        mdb_fatal(e);
-
-    int term = current_term;
-    MDB_val key = { .mv_size = strlen("term"), .mv_data = "term" };
-    MDB_val val = { .mv_size = sizeof(int), .mv_data = &term };
-
-    e = mdb_put(txn, sv->state, &key, &val, 0);
-    switch (e)
-    {
-    case 0:
-        break;
-    default:
-        mdb_fatal(e);
-    }
-
-    e = mdb_txn_commit(txn);
-    if (0 != e)
-        mdb_fatal(e);
-
-    return 0;
+    return mdb_puts_int_commit(sv->db_env, sv->state, "term", current_term);
 }
 
 /** Raft callback for saving voted_for field to disk.
@@ -517,30 +500,7 @@ static int __raft_persist_vote(
     const int voted_for
     )
 {
-    MDB_txn *txn;
-
-    int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
-    if (0 != e)
-        mdb_fatal(e);
-
-    int vote = voted_for;
-    MDB_val key = { .mv_size = strlen("voted_for"), .mv_data = "voted_for" };
-    MDB_val val = { .mv_size = sizeof(int), .mv_data = &vote };
-
-    e = mdb_put(txn, sv->state, &key, &val, 0);
-    switch (e)
-    {
-    case 0:
-        break;
-    default:
-        mdb_fatal(e);
-    }
-
-    e = mdb_txn_commit(txn);
-    if (0 != e)
-        mdb_fatal(e);
-
-    return 0;
+    return mdb_puts_int_commit(sv->db_env, sv->state, "voted_for", voted_for);
 }
 
 static void __peer_alloc_cb(uv_handle_t* handle, size_t size, uv_buf_t* buf)
@@ -710,6 +670,8 @@ static void __send_handshake(peer_connection_t* conn)
     uv_buf_t bufs[1];
     char buf[RAFT_BUFLEN];
     msg_t msg;
+
+    memset(&msg, 0, sizeof(msg));
     msg.type = MSG_HANDSHAKE;
     msg.hs.raft_port = atoi(opts.raft_port);
     msg.hs.http_port = atoi(opts.http_port);
@@ -719,7 +681,8 @@ static void __send_handshake(peer_connection_t* conn)
         uv_fatal(e);
 }
 
-/** Raft peer has connected to us */
+/** Raft peer has connected to us
+* Add them to our list of nodes */
 static void __on_peer_connection(uv_stream_t *listener, const int status)
 {
     int e;
@@ -940,7 +903,7 @@ static void __periodic(uv_timer_t* handle)
 }
 
 /** Load all log entries we have persisted to disk */
-static void __load_commit_log()
+static void __load_commit_log(server_t* sv)
 {
     MDB_cursor* curs;
     MDB_txn *txn;
@@ -967,6 +930,7 @@ static void __load_commit_log()
     }
 
     raft_entry_t ety;
+    ety.id = 0;
 
     int n_entries = 0;
 
@@ -1003,7 +967,7 @@ static void __load_commit_log()
 }
 
 /** Load voted_for and term raft fields */
-static void __load_persistent_state()
+static void __load_persistent_state(server_t* sv)
 {
     MDB_val val;
 
@@ -1030,7 +994,7 @@ static void __http_worker_start(void* uv_tcp)
         uv_run(listener->loop, UV_RUN_DEFAULT);
 }
 
-static void __drop(server_t* sv)
+static void __drop_db(server_t* sv)
 {
     MDB_txn *txn;
     MDB_dbi dbs[] = { sv->entries, sv->tickets, sv->state };
@@ -1056,9 +1020,20 @@ static void __drop(server_t* sv)
     mdb_env_close(sv->db_env);
 }
 
+static void __start_raft_periodic_timer(server_t* sv)
+{
+    uv_timer_t *periodic_req = calloc(1, sizeof(uv_timer_t));
+    periodic_req->data = sv;
+    uv_timer_init(&sv->peer_loop, periodic_req);
+    uv_timer_start(periodic_req, __periodic, 0, 1000);
+    raft_set_election_timeout(sv->raft, 1000);
+}
+
 int main(int argc, char **argv)
 {
     int e, i;
+
+    memset(sv, 0, sizeof(server_t));
 
     e = parse_options(argc, argv, &opts);
     if (-1 == e)
@@ -1094,12 +1069,12 @@ int main(int argc, char **argv)
 
     if (opts.drop)
     {
-        __drop(sv);
+        __drop_db(sv);
         exit(0);
     }
 
-    __load_persistent_state();
-    __load_commit_log();
+    __load_persistent_state(sv);
+    __load_commit_log(sv);
 
     /* web server for clients */
     h2o_pathconf_t *pathconf;
@@ -1132,8 +1107,10 @@ int main(int argc, char **argv)
         uv_multiplex_worker_create(&m, i, NULL);
     uv_multiplex_dispatch(&m);
 
-    uv_loop_t peer_loop;
-    e = uv_loop_init(&peer_loop);
+    memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
+    e = uv_loop_init(&sv->peer_loop);
+    if (0 != e)
+        uv_fatal(e);
     if (0 != e)
         uv_fatal(e);
 
@@ -1149,7 +1126,7 @@ int main(int argc, char **argv)
 
         peer_connection_t* conn = calloc(1, sizeof(peer_connection_t));
         conn->node_idx = node_idx;
-        conn->loop = &peer_loop;
+        conn->loop = &sv->peer_loop;
         e = uv_ip4_addr(res.host, atoi(res.port), &conn->addr);
         if (0 != e)
             uv_fatal(e);
@@ -1169,20 +1146,13 @@ int main(int argc, char **argv)
 
     /* listen socket for raft peer traffic */
     uv_tcp_t peer_listen;
-    uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.raft_port), &peer_loop);
+    uv_bind_listen_socket(&peer_listen, opts.host, atoi(opts.raft_port), &sv->peer_loop);
     e = uv_listen((uv_stream_t*)&peer_listen, MAX_PEER_CONNECTIONS,
                   __on_peer_connection);
     if (0 != e)
         uv_fatal(e);
 
-    /* raft periodic timer */
-    uv_timer_t *periodic_req;
-    periodic_req = malloc(sizeof(uv_timer_t));
-    periodic_req->data = sv;
-    uv_timer_init(&peer_loop, periodic_req);
-    uv_timer_start(periodic_req, __periodic, 0, 1000);
-    raft_set_election_timeout(sv->raft, 1000);
+    __start_raft_periodic_timer(sv);
 
-    while (1)
-        uv_run(&peer_loop, UV_RUN_DEFAULT);
+    uv_run(&sv->peer_loop, UV_RUN_DEFAULT);
 }

@@ -50,6 +50,7 @@ def build(bld):
         lib.append('rt')
 
     clibs = """
+        arraytools
         container_of
         h2o_helpers
         lmdb
