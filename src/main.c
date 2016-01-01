@@ -756,14 +756,16 @@ static int __connect_to_peer(peer_connection_t* conn)
 {
     int e;
 
-    conn->stream = malloc(sizeof(uv_tcp_t));
-    conn->stream->data = conn;
-    conn->connection_status = CONNECTING;
-    e = uv_tcp_init(conn->loop, (uv_tcp_t*)conn->stream);
+    uv_tcp_t *tcp = calloc(1, sizeof(uv_tcp_t));
+    tcp->data = conn;
+    e = uv_tcp_init(conn->loop, tcp);
     if (0 != e)
         uv_fatal(e);
 
-    uv_connect_t *c = malloc(sizeof(uv_connect_t));
+    conn->stream = (uv_stream_t*)tcp;
+    conn->connection_status = CONNECTING;
+
+    uv_connect_t *c = calloc(1, sizeof(uv_connect_t));
     c->data = conn;
     e = uv_tcp_connect(c, (uv_tcp_t*)conn->stream,
                        (struct sockaddr*)&conn->addr,
@@ -777,7 +779,7 @@ static int __connect_to_peer(peer_connection_t* conn)
 /** Raft callback for displaying debugging information */
 void __raft_log(raft_server_t* raft, void *udata, const char *buf)
 {
-    printf("raft: '%s'\n", buf);
+    printf("raft: %s\n", buf);
 }
 
 /** Raft callback for appending an item to the log */
