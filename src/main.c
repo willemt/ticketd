@@ -1008,10 +1008,8 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
 
     __send_handshake(conn);
 
-    int namelen = sizeof(conn->addr);
-    e =
-        uv_tcp_getpeername(req->handle, (struct sockaddr*)&conn->addr,
-                           &namelen);
+    int nlen = sizeof(conn->addr);
+    e = uv_tcp_getpeername(req->handle, (struct sockaddr*)&conn->addr, &nlen);
     if (0 != e)
         uv_fatal(e);
 
@@ -1048,7 +1046,6 @@ static void __connect_to_peer(peer_connection_t* conn)
     uv_connect_t *c = calloc(1, sizeof(uv_connect_t));
     c->data = conn;
 
-    printf("connecting to: %s\n", inet_ntoa(conn->addr.sin_addr));
     e = uv_tcp_connect(c, (uv_tcp_t*)conn->stream,
                        (struct sockaddr*)&conn->addr,
                        __on_connection_accepted_by_peer);
@@ -1089,9 +1086,7 @@ static int __raft_logentry_offer(
     else if (sizeof(entry_cfg_change_add_finalization_t) == ety->data.len)
     {
         entry_cfg_change_add_finalization_t *change = (void*)ety->data.buf;
-        printf("finalizing node: %d\n", change->node_id);
         raft_node_t *node = raft_get_node(raft, change->node_id);
-        assert(node);
         raft_node_set_voting(node, 1);
     }
 
@@ -1147,28 +1142,6 @@ static int __raft_logentry_offer(
     if (0 != e)
         mdb_fatal(e);
 
-    /* #<{(| So that our entry points to a valid buffer, get the mmap'd buffer. */
-    /*  * This is because the currently pointed to buffer is temporary. |)}># */
-    /* e = mdb_txn_begin(sv->db_env, NULL, 0, &txn); */
-    /* if (0 != e) */
-    /*     mdb_fatal(e); */
-    /*  */
-    /* e = mdb_get(txn, sv->entries, &key, &val); */
-    /* switch (e) */
-    /* { */
-    /* case 0: */
-    /*     break; */
-    /* default: */
-    /*     mdb_fatal(e); */
-    /* } */
-    /*  */
-    /* e = mdb_txn_commit(txn); */
-    /* if (0 != e) */
-    /*     mdb_fatal(e); */
-    /*  */
-    /* ety->data.buf = val.mv_data; */
-    /* ety->data.len = val.mv_size; */
-    /*  */
     return 0;
 }
 
@@ -1205,6 +1178,8 @@ static int __raft_logentry_pop(
     return 0;
 }
 
+/** Non-voting node now has enough logs to be able to vote.
+ * Append a finalization cfg log entry. */
 static void __raft_node_has_sufficient_logs(
     raft_server_t* raft,
     void *user_data,
@@ -1241,16 +1216,6 @@ raft_cbs_t raft_funcs = {
 static void __periodic(uv_timer_t* handle)
 {
     raft_periodic(sv->raft, PERIOD_MSEC);
-
-    /* int nconn = 0; */
-    /* peer_connection_t* conn; */
-    /* for (conn = sv->conns; conn; conn = conn->next, nconn++) */
-    /*     printf("conn: %s:%d status: %d %p\n", */
-    /*             inet_ntoa(conn->addr.sin_addr), */
-    /*             conn->raft_port, */
-    /*             conn->connection_status, */
-    /*             conn->node); */
-    /* printf("nconn: %d\n", nconn); */
 }
 
 /** Load all log entries we have persisted to disk */
@@ -1336,7 +1301,7 @@ static void __load_persistent_state(server_t* sv)
         raft_set_current_term(sv->raft, *(int*)val.mv_data);
 }
 
-static void __load_settings(server_t* sv, options_t* opts)
+static void __load_opts(server_t* sv, options_t* opts)
 {
     int e;
 
@@ -1438,7 +1403,6 @@ static void __start_http_socket(server_t* sv, const char* host, int port, uv_tcp
     if (0 != e)
         uv_fatal(e);
 
-    /* listen socket for HTTP client traffic */
     uv_bind_listen_socket(listen, host, port, &sv->http_loop);
 
     /* http workers */
@@ -1456,7 +1420,6 @@ static void __start_peer_socket(server_t* sv, const char* host, int port, uv_tcp
     if (0 != e)
         uv_fatal(e);
 
-    /* listen socket for raft peer traffic */
     uv_bind_listen_socket(listen, host, port, &sv->peer_loop);
     e = uv_listen((uv_stream_t*)listen, MAX_PEER_CONNECTIONS,
                   __on_peer_connection);
@@ -1561,7 +1524,7 @@ int main(int argc, char **argv)
     /* Reload cluster information and rejoin cluster */
     else
     {
-        __load_settings(sv, &opts);
+        __load_opts(sv, &opts);
 
         __start_http_socket(sv, opts.host, atoi(opts.http_port), &http_listen, &m);
         __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
