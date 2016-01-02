@@ -543,6 +543,9 @@ static void __delete_connection(server_t* sv, peer_connection_t* conn)
     else
         assert(0);
 
+    if (conn->node)
+        raft_node_set_udata(conn->node, NULL);
+
     // TODO: make sure all resources are freed
     free(conn);
 }
@@ -782,6 +785,13 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         /* Is this peer in our configuration already? */
         raft_node_t* node = raft_get_node(sv->raft, m.hs.node_id);
+
+        if (node)
+        {
+            printf("NO NODE %d\n", m.hs.node_id);
+            raft_node_set_udata(node, conn);
+            conn->node = node;
+        }
 
         /* We don't know this peer... */
         /* Do we have authority to add this peer? */
@@ -1268,7 +1278,11 @@ static void __periodic(uv_timer_t* handle)
     int nconn = 0;
     peer_connection_t* conn;
     for (conn = sv->conns; conn; conn = conn->next, nconn++)
-        printf("conn: %s:%d\n", inet_ntoa(conn->addr.sin_addr), conn->raft_port);
+        printf("conn: %s:%d status: %d %p\n",
+                inet_ntoa(conn->addr.sin_addr),
+                conn->raft_port,
+                conn->connection_status,
+                conn->node);
     printf("nconn: %d\n", nconn);
 }
 
@@ -1355,13 +1369,28 @@ static void __load_persistent_state(server_t* sv)
         raft_set_current_term(sv->raft, *(int*)val.mv_data);
 }
 
-static void __load_settings(server_t* sv)
+static void __load_settings(server_t* sv, options_t* opts)
 {
     int e;
+
+    int http_port, raft_port;
 
     e = mdb_gets_int(sv->db_env, sv->state, "id", &sv->node_id);
     if (-1 == e)
         abort();
+
+    e = mdb_gets_int(sv->db_env, sv->state, "http_port", &http_port);
+    if (-1 == e)
+        abort();
+
+    e = mdb_gets_int(sv->db_env, sv->state, "raft_port", &raft_port);
+    if (-1 == e)
+        abort();
+
+    free(opts->http_port);
+    free(opts->raft_port);
+    asprintf(&opts->http_port, "%d", http_port);
+    asprintf(&opts->raft_port, "%d", raft_port);
 }
 
 static void __http_worker_start(void* uv_tcp)
@@ -1427,14 +1456,46 @@ static void __new_db(server_t* sv)
     mdb_db_create(&sv->state, sv->db_env, "state");
 }
 
-static void __save_id(server_t* sv)
+static void __save_opts(server_t* sv, options_t* opts)
 {
     mdb_puts_int_commit(sv->db_env, sv->state, "id", sv->node_id);
+    mdb_puts_int_commit(sv->db_env, sv->state, "raft_port", atoi(opts->raft_port));
+    mdb_puts_int_commit(sv->db_env, sv->state, "http_port", atoi(opts->http_port));
+}
+
+static void __start_http_socket(server_t* sv, const char* host, int port, uv_loop_t* loop, uv_tcp_t* listen, uv_multiplex_t* m)
+{
+    int i;
+
+    /* listen socket for HTTP client traffic */
+    uv_bind_listen_socket(listen, host, port, loop);
+
+    /* http workers */
+    uv_multiplex_init(m, listen, IPC_PIPE_NAME, HTTP_WORKERS,
+                      __http_worker_start);
+    for (i = 0; i < HTTP_WORKERS; i++)
+        uv_multiplex_worker_create(m, i, NULL);
+    uv_multiplex_dispatch(m);
+}
+
+static void __start_peer_socket(server_t* sv, const char* host, int port, uv_tcp_t* listen)
+{
+    memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
+    int e = uv_loop_init(&sv->peer_loop);
+    if (0 != e)
+        uv_fatal(e);
+
+    /* listen socket for raft peer traffic */
+    uv_bind_listen_socket(listen, host, port, &sv->peer_loop);
+    e = uv_listen((uv_stream_t*)listen, MAX_PEER_CONNECTIONS,
+                  __on_peer_connection);
+    if (0 != e)
+        uv_fatal(e);
 }
 
 int main(int argc, char **argv)
 {
-    int e, i;
+    int e;
 
     memset(sv, 0, sizeof(server_t));
 
@@ -1493,31 +1554,9 @@ int main(int argc, char **argv)
     uv_mutex_init(&sv->raft_lock);
     uv_cond_init(&sv->appendentries_received);
 
-    /* listen socket for HTTP client traffic */
     uv_tcp_t http_listen;
-    uv_bind_listen_socket(&http_listen, opts.host, atoi(opts.http_port), &loop);
-
-    /* http workers */
     uv_multiplex_t m;
-    uv_multiplex_init(&m, &http_listen, IPC_PIPE_NAME, HTTP_WORKERS,
-                      __http_worker_start);
-    for (i = 0; i < HTTP_WORKERS; i++)
-        uv_multiplex_worker_create(&m, i, NULL);
-    uv_multiplex_dispatch(&m);
-
-    memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
-    e = uv_loop_init(&sv->peer_loop);
-    if (0 != e)
-        uv_fatal(e);
-
-    /* listen socket for raft peer traffic */
     uv_tcp_t peer_listen;
-    uv_bind_listen_socket(&peer_listen, opts.host, atoi(
-                              opts.raft_port), &sv->peer_loop);
-    e = uv_listen((uv_stream_t*)&peer_listen, MAX_PEER_CONNECTIONS,
-                  __on_peer_connection);
-    if (0 != e)
-        uv_fatal(e);
 
     if (opts.id)
         sv->node_id = atoi(opts.id);
@@ -1527,7 +1566,10 @@ int main(int argc, char **argv)
     {
         __drop_db(sv);
         __new_db(sv);
-        __save_id(sv);
+        __save_opts(sv, &opts);
+
+        __start_http_socket(sv, opts.host, atoi(opts.http_port), &loop, &http_listen, &m);
+        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
 
         /* add self */
         sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
@@ -1545,7 +1587,10 @@ int main(int argc, char **argv)
     {
         __drop_db(sv);
         __new_db(sv);
-        __save_id(sv);
+        __save_opts(sv, &opts);
+
+        __start_http_socket(sv, opts.host, atoi(opts.http_port), &loop, &http_listen, &m);
+        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
 
         /* add self */
         sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
@@ -1560,7 +1605,10 @@ int main(int argc, char **argv)
     /* Reload cluster information and rejoin cluster */
     else
     {
-        __load_settings(sv);
+        __load_settings(sv, &opts);
+
+        __start_http_socket(sv, opts.host, atoi(opts.http_port), &loop, &http_listen, &m);
+        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
 
         /* add self */
         sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);

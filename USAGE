@@ -1,7 +1,7 @@
 ticketd - a unique ticket server
 
 Usage:
-  ticketd [-d | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
+  ticketd [-d | -P DB_PATH | -H HOST | -s SIZE | -i PID_FILE | -g]
   ticketd new --id ID [-d | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
   ticketd join PEER --id ID [-d | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
   ticketd drop [-P DB_PATH]
