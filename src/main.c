@@ -412,7 +412,6 @@ static void __peer_write_cb(uv_write_t *req, int status)
     case 0:
         break;
     case UV__EPIPE:
-        printf("DISCONNECTED!n");
         conn->connection_status = DISCONNECTED;
         break;
     default:
@@ -770,8 +769,6 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     {
     case MSG_HANDSHAKE:
     {
-        printf("got handshake\n");
-
         peer_connection_t* nconn = __find_connection(
             sv, inet_ntoa(conn->addr.sin_addr), m.hs.raft_port);
         if (nconn)
@@ -788,49 +785,27 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         if (node)
         {
-            printf("NO NODE %d\n", m.hs.node_id);
             raft_node_set_udata(node, conn);
             conn->node = node;
         }
 
-        /* We don't know this peer... */
-        /* Do we have authority to add this peer? */
         if (!leader)
-        {
-            printf("no leader sorry\n");
             return __send_handshake_response(conn, HANDSHAKE_FAILURE, NULL);
-        }
-        /* Redirect the peer to the leader */
         else if (leader != sv->node)
-        {
-            printf("redirecting\n");
             return __send_handshake_response(conn, HANDSHAKE_FAILURE, leader);
-        }
+        else if (node)
+            return __send_handshake_response(conn, HANDSHAKE_SUCCESS, NULL);
         else
         {
-            if (node)
-            {
-                raft_node_set_udata(node, conn);
-                conn->connection_status = CONNECTED;
-                conn->node = node;
-                printf("in config\n");
-                return __send_handshake_response(conn, HANDSHAKE_SUCCESS, leader);
-            }
-
-            printf("appending\n");
-
             __append_cfg_change(sv, CCHANGE_ADD,
                                 inet_ntoa(conn->addr.sin_addr),
                                 m.hs.raft_port, m.hs.http_port,
                                 m.hs.node_id);
-
-            return __send_handshake_response(conn, HANDSHAKE_SUCCESS, leader);
+            return __send_handshake_response(conn, HANDSHAKE_SUCCESS, NULL);
         }
     }
     break;
     case MSG_HANDSHAKE_RESPONSE:
-        printf("got response\n");
-
         if (0 == m.hsr.success)
         {
             conn->http_port = m.hsr.http_port;
@@ -838,10 +813,6 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
             /* try to connect to the leader */
             if (m.hsr.leader_port)
             {
-                printf("trying other leader: %s %d\n",
-                        m.hsr.leader_host,
-                        m.hsr.leader_port);
-
                 peer_connection_t* nconn =
                     __find_connection(sv, m.hsr.leader_host, m.hsr.leader_port);
                 if (!nconn)
@@ -850,11 +821,6 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
                     __connect_to_peer_at_host(nconn, m.hsr.leader_host,
                                               m.hsr.leader_port);
                 }
-            }
-            else
-            {
-                /* printf("bad response\n"); */
-                /* abort(); */
             }
         }
         break;
@@ -964,6 +930,7 @@ static int __send_handshake_response(peer_connection_t* conn,
     msg.hsr.success = success;
     msg.hsr.leader_port = 0;
 
+    /* allow the peer to redirect to the leader */
     if (leader)
     {
         peer_connection_t* leader_conn = raft_node_get_udata(leader);
