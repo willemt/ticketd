@@ -1,7 +1,7 @@
 ticketd - a unique ticket server
 
 Usage:
-  ticketd PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE]
+  ticketd PEERS [--daemonize | -P DB_PATH | -H HOST | -p PORT | -t PORT | -s SIZE | -i PID_FILE | -g]
   ticketd drop [-P DB_PATH]
   ticketd --version
   ticketd --help
@@ -14,6 +14,7 @@ Options:
   -t --http_port PORT      Port for HTTP traffic [default: 8000]
   -s --db_size SIZE        Size of database in megabytes [default: 1000]
   -i --pid_file PID_FILE   Pid file [default: /var/run/pearl.pid]
+  -g --debug               Switch on debugging mode
   -v --version             Display version.
   -h --help                Prints a short usage summary.
 

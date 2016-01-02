@@ -787,7 +787,8 @@ static int __connect_to_peer(peer_connection_t* conn)
 /** Raft callback for displaying debugging information */
 void __raft_log(raft_server_t* raft, void *udata, const char *buf)
 {
-    printf("raft: %s\n", buf);
+    if (opts.debug)
+        printf("raft: %s\n", buf);
 }
 
 /** Raft callback for appending an item to the log */
