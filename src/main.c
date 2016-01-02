@@ -211,7 +211,7 @@ typedef struct
      * entry has been committed. This condition is used to wake us up. */
     uv_cond_t appendentries_received;
 
-    uv_loop_t peer_loop;
+    uv_loop_t peer_loop, http_loop;
 
     /* Link list of peer connections */
     peer_connection_t* conns;
@@ -1275,15 +1275,15 @@ static void __periodic(uv_timer_t* handle)
 {
     raft_periodic(sv->raft, PERIOD_MSEC);
 
-    int nconn = 0;
-    peer_connection_t* conn;
-    for (conn = sv->conns; conn; conn = conn->next, nconn++)
-        printf("conn: %s:%d status: %d %p\n",
-                inet_ntoa(conn->addr.sin_addr),
-                conn->raft_port,
-                conn->connection_status,
-                conn->node);
-    printf("nconn: %d\n", nconn);
+    /* int nconn = 0; */
+    /* peer_connection_t* conn; */
+    /* for (conn = sv->conns; conn; conn = conn->next, nconn++) */
+    /*     printf("conn: %s:%d status: %d %p\n", */
+    /*             inet_ntoa(conn->addr.sin_addr), */
+    /*             conn->raft_port, */
+    /*             conn->connection_status, */
+    /*             conn->node); */
+    /* printf("nconn: %d\n", nconn); */
 }
 
 /** Load all log entries we have persisted to disk */
@@ -1404,8 +1404,7 @@ static void __http_worker_start(void* uv_tcp)
     if (0 != e)
         uv_fatal(e);
 
-    while (1)
-        uv_run(listener->loop, UV_RUN_DEFAULT);
+    uv_run(listener->loop, UV_RUN_DEFAULT);
 }
 
 static void __drop_db(server_t* sv)
@@ -1463,12 +1462,17 @@ static void __save_opts(server_t* sv, options_t* opts)
     mdb_puts_int_commit(sv->db_env, sv->state, "http_port", atoi(opts->http_port));
 }
 
-static void __start_http_socket(server_t* sv, const char* host, int port, uv_loop_t* loop, uv_tcp_t* listen, uv_multiplex_t* m)
+static void __start_http_socket(server_t* sv, const char* host, int port, uv_tcp_t* listen, uv_multiplex_t* m)
 {
     int i;
 
+    memset(&sv->http_loop, 0, sizeof(uv_loop_t));
+    int e = uv_loop_init(&sv->http_loop);
+    if (0 != e)
+        uv_fatal(e);
+
     /* listen socket for HTTP client traffic */
-    uv_bind_listen_socket(listen, host, port, loop);
+    uv_bind_listen_socket(listen, host, port, &sv->http_loop);
 
     /* http workers */
     uv_multiplex_init(m, listen, IPC_PIPE_NAME, HTTP_WORKERS,
@@ -1516,11 +1520,6 @@ int main(int argc, char **argv)
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT, __int_handler);
 
-    uv_loop_t loop;
-    e = uv_loop_init(&loop);
-    if (0 != e)
-        uv_fatal(e);
-
     sv->raft = raft_new();
     raft_set_callbacks(sv->raft, &raft_funcs, sv);
 
@@ -1554,60 +1553,50 @@ int main(int argc, char **argv)
     uv_mutex_init(&sv->raft_lock);
     uv_cond_init(&sv->appendentries_received);
 
-    uv_tcp_t http_listen;
+    uv_tcp_t http_listen, peer_listen;
     uv_multiplex_t m;
-    uv_tcp_t peer_listen;
 
-    if (opts.id)
-        sv->node_id = atoi(opts.id);
-
-    /* create a new cluster */
-    if (opts.new)
+    if (opts.new || opts.join)
     {
+        if (opts.id)
+            sv->node_id = atoi(opts.id);
+
         __drop_db(sv);
         __new_db(sv);
         __save_opts(sv, &opts);
 
-        __start_http_socket(sv, opts.host, atoi(opts.http_port), &loop, &http_listen, &m);
+        __start_http_socket(sv, opts.host, atoi(opts.http_port), &http_listen, &m);
         __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
 
         /* add self */
         sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
 
-        raft_become_leader(sv->raft);
-        /* The log needs to contain us as the original cfg change */
-        __append_cfg_change(sv, CCHANGE_ADD,
-                            opts.host,
-                            atoi(opts.raft_port),
-                            atoi(opts.http_port),
-                            sv->node_id);
-    }
-    /* Join a new cluster */
-    else if (opts.join)
-    {
-        __drop_db(sv);
-        __new_db(sv);
-        __save_opts(sv, &opts);
+        if (opts.new)
+        {
+            raft_become_leader(sv->raft);
+            /* The log needs to contain us as the original cfg change */
+            __append_cfg_change(sv, CCHANGE_ADD,
+                                opts.host,
+                                atoi(opts.raft_port),
+                                atoi(opts.http_port),
+                                sv->node_id);
+        }
+        else
+        {
+            addr_parse_result_t res;
+            parse_addr(opts.PEER, strlen(opts.PEER), &res);
+            res.host[res.host_len] = '\0';
 
-        __start_http_socket(sv, opts.host, atoi(opts.http_port), &loop, &http_listen, &m);
-        __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
-
-        /* add self */
-        sv->node = raft_add_node(sv->raft, NULL, sv->node_id, 1);
-
-        addr_parse_result_t res;
-        parse_addr(opts.PEER, strlen(opts.PEER), &res);
-        res.host[res.host_len] = '\0';
-
-        peer_connection_t* conn = __new_connection(sv);
-        __connect_to_peer_at_host(conn, res.host, atoi(res.port));
+            peer_connection_t* conn = __new_connection(sv);
+            __connect_to_peer_at_host(conn, res.host, atoi(res.port));
+        }
     }
     /* Reload cluster information and rejoin cluster */
     else
     {
         __load_settings(sv, &opts);
 
-        __start_http_socket(sv, opts.host, atoi(opts.http_port), &loop, &http_listen, &m);
+        __start_http_socket(sv, opts.host, atoi(opts.http_port), &http_listen, &m);
         __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
 
         /* add self */
