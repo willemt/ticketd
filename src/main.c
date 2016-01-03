@@ -522,13 +522,6 @@ static int __raft_send_appendentries(
     return 0;
 }
 
-static int __apply_cfg_change(server_t* sv, raft_server_t* raft,
-                              const unsigned char* data)
-{
-    printf("apply cfg change\n");
-    return 0;
-}
-
 static void __delete_connection(server_t* sv, peer_connection_t* conn)
 {
     peer_connection_t* prev = NULL;
@@ -606,13 +599,11 @@ static int __raft_applylog(
     /* Check if configuration change */
     if (sizeof(entry_cfg_change_t) == len)
     {
-        __apply_cfg_change(sv, raft, data);
+
     }
     else if (sizeof(entry_cfg_change_add_finalization_t) == len)
     {
-        /* entry_cfg_change_add_finalization_t *change = (void*)data; */
-        /* raft_node_t *node = raft_get_node(raft, change->node_id); */
-        /* raft_node_set_voting(node, 1); */
+
     }
     else
     {
@@ -1086,8 +1077,7 @@ static int __raft_logentry_offer(
     else if (sizeof(entry_cfg_change_add_finalization_t) == ety->data.len)
     {
         entry_cfg_change_add_finalization_t *change = (void*)ety->data.buf;
-        raft_node_t *node = raft_get_node(raft, change->node_id);
-        raft_node_set_voting(node, 1);
+        raft_node_set_voting(raft_get_node(raft, change->node_id), 1);
     }
 
     int e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
@@ -1185,6 +1175,7 @@ static void __raft_node_has_sufficient_logs(
     void *user_data,
     raft_node_t* node)
 {
+    // TODO don't add if we are already adding a node
     entry_cfg_change_add_finalization_t *change = calloc(1, sizeof(*change));
     change->node_id = raft_node_get_id(node);
 
@@ -1194,7 +1185,7 @@ static void __raft_node_has_sufficient_logs(
     entry.data.len = sizeof(*change);
 
     msg_entry_response_t r;
-    int e = raft_recv_entry(raft, &entry, &r);
+    int e = raft_recv_voting_cfg_change_entry(raft, node, &entry, &r);
     if (0 != e)
         assert(0);
 }
