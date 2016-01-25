@@ -35,4 +35,6 @@ int mdb_poll(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v);
  * Delete the last item */
 int mdb_pop(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v);
 
+void mdb_drop_dbs(MDB_env *env, MDB_dbi dbs[], size_t ndbs);
+
 #endif /* LMDB_HELPERS_H */

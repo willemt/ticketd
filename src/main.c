@@ -176,8 +176,7 @@ static int __check_if_ticket_exists(const unsigned int ticket)
     if (0 != e)
         mdb_fatal(e);
 
-    MDB_val k = { .mv_size = sizeof(ticket), .mv_data = (void*)&ticket };
-    MDB_val v;
+    MDB_val v, k = { .mv_size = sizeof(ticket), .mv_data = (void*)&ticket };
 
     e = mdb_get(txn, sv->tickets, &k, &v);
     switch (e)
@@ -1015,28 +1014,8 @@ static void __http_worker_start(void* uv_tcp)
 
 static void __drop_db(server_t* sv)
 {
-    MDB_txn *txn;
     MDB_dbi dbs[] = { sv->entries, sv->tickets, sv->state };
-    int i, e;
-
-    e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
-    if (0 != e)
-        mdb_fatal(e);
-
-    for (i = 0; i < len(dbs); i++)
-    {
-        e = mdb_drop(txn, dbs[i], 1);
-        if (0 != e)
-            mdb_fatal(e);
-    }
-
-    e = mdb_txn_commit(txn);
-    if (0 != e)
-        mdb_fatal(e);
-
-    for (i = 0; i < len(dbs); i++)
-        mdb_dbi_close(sv->db_env, dbs[i]);
-    mdb_env_close(sv->db_env);
+    mdb_drop_dbs(sv->db_env, dbs, len(dbs));
 }
 
 static void __start_raft_periodic_timer(server_t* sv)

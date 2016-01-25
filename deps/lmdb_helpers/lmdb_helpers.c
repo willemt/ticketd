@@ -260,3 +260,27 @@ int mdb_pop(MDB_env *env, MDB_dbi dbi, MDB_val *k, MDB_val *v)
 
     return 0;
 }
+
+void mdb_drop_dbs(MDB_env *env, MDB_dbi dbs[], size_t ndbs)
+{
+    MDB_txn *txn;
+
+    int e = mdb_txn_begin(env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    for (int i = 0; i < ndbs; i++)
+    {
+        e = mdb_drop(txn, dbs[i], 1);
+        if (0 != e)
+            mdb_fatal(e);
+    }
+
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
+    for (int i = 0; i < ndbs; i++)
+        mdb_dbi_close(env, dbs[i]);
+    mdb_env_close(env);
+}
