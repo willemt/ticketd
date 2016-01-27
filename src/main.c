@@ -102,8 +102,6 @@ typedef struct
 
     uv_stream_t* stream;
 
-    uv_write_t wreq;
-
     uv_loop_t* loop;
 } peer_connection_t;
 
@@ -271,11 +269,19 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
         return h2oh_respond_with_error(req, 500, "BAD");
 
     /* block until the entry is committed */
-    int done = 0;
+    int done = 0, tries = 0;
     do
     {
+        if (3 < tries)
+        {
+            printf("ERROR: failed to commit entry\n");
+            uv_mutex_unlock(&sv->raft_lock);
+            return h2oh_respond_with_error(req, 400, "TRY AGAIN");
+        }
+
         uv_cond_wait(&sv->appendentries_received, &sv->raft_lock);
         e = raft_msg_entry_response_committed(sv->raft, &r);
+        tries += 1;
         switch (e)
         {
         case 0:
