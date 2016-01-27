@@ -326,23 +326,6 @@ static void __on_http_connection(uv_stream_t *listener, const int status)
     h2o_http1_accept(&sv->ctx, sv->cfg.hosts, sock);
 }
 
-/** Write peer traffic */
-static void __peer_write_cb(uv_write_t *req, int status)
-{
-    peer_connection_t* conn = req->data;
-
-    switch (status)
-    {
-    case 0:
-        break;
-    case UV__EPIPE:
-        conn->connection_status = DISCONNECTED;
-        break;
-    default:
-        uv_fatal(status);
-    }
-}
-
 /** Initiate connection if we are disconnected */
 static int __connect_if_needed(peer_connection_t* conn)
 {
@@ -423,9 +406,8 @@ static int __raft_send_appendentries(
         assert(0 == e);
         bufs[1].len = sz;
         bufs[1].base = ptr;
-
-        e = uv_write(&conn->wreq, conn->stream, bufs, 2, __peer_write_cb);
-        if (-1 == e)
+        e = uv_try_write(conn->stream, bufs, 2);
+        if (e < 0)
             uv_fatal(e);
 
         tpl_free(tn);
@@ -433,8 +415,8 @@ static int __raft_send_appendentries(
     else
     {
         /* keep alive appendentries only */
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (-1 == e)
+        e = uv_try_write(conn->stream, bufs, 1);
+        if (e < 0)
             uv_fatal(e);
     }
 
@@ -826,8 +808,16 @@ static int __raft_logentry_offer(
         mdb_fatal(e);
     }
 
+    e = mdb_txn_commit(txn);
+    if (0 != e)
+        mdb_fatal(e);
+
     /* So that our entry points to a valid buffer, get the mmap'd buffer.
      * This is because the currently pointed to buffer is temporary. */
+    e = mdb_txn_begin(sv->db_env, NULL, 0, &txn);
+    if (0 != e)
+        mdb_fatal(e);
+
     e = mdb_get(txn, sv->entries, &key, &val);
     switch (e)
     {
