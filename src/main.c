@@ -31,7 +31,7 @@
 #define RAFT_BUFLEN 512
 #define LEADER_URL_LEN 512
 #define IPC_PIPE_NAME "ticketd_ipc"
-#define HTTP_WORKERS 1
+#define HTTP_WORKERS 4
 
 /** Message types used for peer to peer traffic
  * These values are used to identify message types during deserialization */
@@ -141,7 +141,7 @@ typedef struct
      * entry has been committed. This condition is used to wake us up. */
     uv_cond_t appendentries_received;
 
-    uv_loop_t peer_loop;
+    uv_loop_t peer_loop, http_loop;
 } server_t;
 
 options_t opts;
@@ -1023,10 +1023,36 @@ static void __new_db(server_t* sv)
     mdb_db_create(&sv->state, sv->db_env, "state");
 }
 
+static void __start_http_socket(server_t* sv, const char* host, int port, uv_tcp_t* listen, uv_multiplex_t* m)
+{
+    memset(&sv->http_loop, 0, sizeof(uv_loop_t));
+    int e = uv_loop_init(&sv->http_loop);
+    if (0 != e)
+        uv_fatal(e);
+    uv_bind_listen_socket(listen, host, port, &sv->http_loop);
+    uv_multiplex_init(m, listen, IPC_PIPE_NAME, HTTP_WORKERS,
+                      __http_worker_start);
+    for (int i = 0; i < HTTP_WORKERS; i++)
+        uv_multiplex_worker_create(m, i, NULL);
+    uv_multiplex_dispatch(m);
+}
+
+static void __start_peer_socket(server_t* sv, const char* host, int port, uv_tcp_t* listen)
+{
+    memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
+    int e = uv_loop_init(&sv->peer_loop);
+    if (0 != e)
+        uv_fatal(e);
+
+    uv_bind_listen_socket(listen, host, port, &sv->peer_loop);
+    e = uv_listen((uv_stream_t*)listen, MAX_PEER_CONNECTIONS,
+                  __on_peer_connection);
+    if (0 != e)
+        uv_fatal(e);
+}
+
 int main(int argc, char **argv)
 {
-    int i;
-
     memset(sv, 0, sizeof(server_t));
 
     int e = parse_options(argc, argv, &opts);
@@ -1044,11 +1070,6 @@ int main(int argc, char **argv)
     }
 
     signal(SIGPIPE, SIG_IGN);
-
-    uv_loop_t loop;
-    e = uv_loop_init(&loop);
-    if (0 != e)
-        uv_fatal(e);
 
     sv->raft = raft_new();
     raft_set_callbacks(sv->raft, &raft_funcs, sv);
@@ -1086,31 +1107,9 @@ int main(int argc, char **argv)
     uv_mutex_init(&sv->raft_lock);
     uv_cond_init(&sv->appendentries_received);
 
-    /* listen socket for HTTP client traffic */
-    uv_tcp_t http_listen;
-    uv_bind_listen_socket(&http_listen, opts.host, atoi(opts.http_port), &loop);
-
-    /* http workers */
+    uv_tcp_t http_listen, peer_listen;
     uv_multiplex_t m;
-    uv_multiplex_init(&m, &http_listen, IPC_PIPE_NAME, HTTP_WORKERS,
-                      __http_worker_start);
-    for (i = 0; i < HTTP_WORKERS; i++)
-        uv_multiplex_worker_create(&m, i, NULL);
-    uv_multiplex_dispatch(&m);
 
-    memset(&sv->peer_loop, 0, sizeof(uv_loop_t));
-    e = uv_loop_init(&sv->peer_loop);
-    if (0 != e)
-        uv_fatal(e);
-
-    /* listen socket for raft peer traffic */
-    uv_tcp_t peer_listen;
-    uv_bind_listen_socket(&peer_listen, opts.host, atoi(
-                              opts.raft_port), &sv->peer_loop);
-    e = uv_listen((uv_stream_t*)&peer_listen, MAX_PEER_CONNECTIONS,
-                  __on_peer_connection);
-    if (0 != e)
-        uv_fatal(e);
 
     /* parse list of raft peers.
      * attempt connections. */
@@ -1142,6 +1141,9 @@ int main(int argc, char **argv)
 
         node_id++;
     }
+
+    __start_http_socket(sv, opts.host, atoi(opts.http_port), &http_listen, &m);
+    __start_peer_socket(sv, opts.host, atoi(opts.raft_port), &peer_listen);
 
     __start_raft_periodic_timer(sv);
 
