@@ -167,6 +167,14 @@ static size_t __peer_msg_serialize(tpl_node *tn, uv_buf_t *buf, char* data)
     return sz;
 }
 
+static void __peer_msg_send(uv_stream_t* s, tpl_node *tn, uv_buf_t *buf, char* data)
+{
+    __peer_msg_serialize(tn, buf, data);
+    int e = uv_try_write(s, buf, 1);
+    if (e < 0)
+        uv_fatal(e);
+}
+
 /** Check if the ticket has already been issued
  * @return 0 if not unique; otherwise 1 */
 static int __check_if_ticket_exists(const unsigned int ticket)
@@ -366,11 +374,7 @@ static int __raft_send_requestvote(
     msg_t msg = {};
     msg.type = MSG_REQUESTVOTE,
     msg.rv = *m;
-    __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, buf);
-    conn->wreq.data = conn;
-    e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-    if (-1 == e)
-        uv_fatal(e);
+    __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
     return 0;
 }
 
@@ -529,7 +533,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     int e;
 
     uv_buf_t bufs[1];
-    char buf[RAFT_BUFLEN], *ptr = buf;
+    char buf[RAFT_BUFLEN];
 
     /* special case: handle appendentries payload */
     if (0 < conn->n_expected_entries)
@@ -544,11 +548,8 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
 
         /* send response */
         uv_buf_t bufs[1];
-        char buf[RAFT_BUFLEN], *ptr = buf;
-        ptr += __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, ptr);
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (e < 0)
-            uv_fatal(e);
+        char buf[RAFT_BUFLEN];
+        __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
 
         conn->n_expected_entries = 0;
         return 0;
@@ -593,12 +594,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
     {
         msg_t msg = { .type = MSG_REQUESTVOTE_RESPONSE };
         e = raft_recv_requestvote(sv->raft, conn->node, &m.rv, &msg.rvr);
-
-        /* send response */
-        ptr += __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, ptr);
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (-1 == e)
-            uv_fatal(e);
+        __peer_msg_send(conn->stream, tpl_map("S(I$(II))", &msg), bufs, buf);
     }
     break;
     case MSG_REQUESTVOTE_RESPONSE:
@@ -616,12 +612,7 @@ static int __deserialize_and_handle_msg(void *img, size_t sz, void *data)
         /* this is a keep alive message */
         msg_t msg = { .type = MSG_APPENDENTRIES_RESPONSE };
         e = raft_recv_appendentries(sv->raft, conn->node, &m.ae, &msg.aer);
-
-        /* send response */
-        ptr += __peer_msg_serialize(tpl_map("S(I$(IIII))", &msg), bufs, ptr);
-        e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-        if (-1 == e)
-            uv_fatal(e);
+        __peer_msg_send(conn->stream, tpl_map("S(I$(IIII))", &msg), bufs, buf);
         break;
     case MSG_APPENDENTRIES_RESPONSE:
         e = raft_recv_appendentries_response(sv->raft, conn->node, &m.aer);
@@ -668,11 +659,7 @@ static void __send_handshake(peer_connection_t* conn)
     msg.type = MSG_HANDSHAKE;
     msg.hs.raft_port = atoi(opts.raft_port);
     msg.hs.http_port = atoi(opts.http_port);
-    __peer_msg_serialize(tpl_map("S(I$(II))", &msg), bufs, buf);
-    memset(&conn->wreq, 0, sizeof(uv_write_t));
-    int e = uv_write(&conn->wreq, conn->stream, bufs, 1, __peer_write_cb);
-    if (e < 0)
-        uv_fatal(e);
+    __peer_msg_send(conn->stream, tpl_map("S(I$(II))", &msg), &bufs[0], buf);
 }
 
 /** Raft peer has connected to us.
@@ -730,10 +717,14 @@ static void __on_connection_accepted_by_peer(uv_connect_t *req,
 
     __send_handshake(conn);
 
+    int nlen = sizeof(conn->addr);
+    e = uv_tcp_getpeername((uv_tcp_t*)req->handle, (struct sockaddr*)&conn->addr, &nlen);
+    if (0 != e)
+        uv_fatal(e);
+
     /* start reading from peer */
     conn->connection_status = CONNECTED;
-    req->handle->data = req->data;
-    e = uv_read_start(req->handle, __peer_alloc_cb, __peer_read_cb);
+    e = uv_read_start(conn->stream, __peer_alloc_cb, __peer_read_cb);
     if (0 != e)
         uv_fatal(e);
 }
