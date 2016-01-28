@@ -11,13 +11,6 @@ It uses `LMDB <http://symas.com/mdb/>`_ for storing data, `H2O <https://github.c
 
 ticketd is completely written in C.
 
-Warning
-=======
-
-*This is experimental!*
-
-Among the memory leaks, dynamic membership changes are not yet supported.
-
 How?
 ====
 
@@ -34,26 +27,26 @@ Examples below make use of the excellent `httpie <https://github.com/jakubroztoc
 Starting
 --------
 
-Node A:
+Node A starts a new cluster:
 
 .. code-block:: bash
    :class: ignore
 
-   ticketd 127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003 --peer_port 9001 --http_port 8001
+   ticketd start --id 1 --peer_port 9001 --http_port 8001
 
-Node B:
-
-.. code-block:: bash
-   :class: ignore
-
-   ticketd 127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003 --peer_port 9002 --http_port 8002
-
-Node C:
+Node B joins the new cluster via A:
 
 .. code-block:: bash
    :class: ignore
 
-   ticketd 127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003 --peer_port 9003 --http_port 8003
+   ticketd join 127.0.0.1:9001 --id 2 --peer_port 9002 --http_port 8002
+
+Node C joins the new cluster via A:
+
+.. code-block:: bash
+   :class: ignore
+
+   ticketd join 127.0.0.1:9001 --id 3 --peer_port 9003 --http_port 8003
 
 Obtain a unique identifier via HTTP POST
 ----------------------------------------
