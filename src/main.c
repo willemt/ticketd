@@ -1536,7 +1536,10 @@ int main(int argc, char **argv)
         if (opts.start)
         {
             raft_become_leader(sv->raft);
-            /* The log needs to contain us as the original cfg change */
+            /* We store membership configuration inside the Raft log.
+             * This configuration change is going to be the initial membership
+             * configuration (ie. original node) inside the Raft log. The
+             * first configuration is for a cluster of 1 node. */
             __append_cfg_change(sv, RAFT_LOGTYPE_ADD_NODE,
                                 opts.host,
                                 atoi(opts.raft_port),
