@@ -11,6 +11,7 @@ int h2oh_respond_with_error(h2o_req_t *req, const int status_code,
     h2o_add_header(&req->pool,
                    &req->res.headers,
                    H2O_TOKEN_CONTENT_LENGTH,
+                   NULL,
                    H2O_STRLIT("0"));
     h2o_start_response(req, &generator);
     /* force keep-alive */

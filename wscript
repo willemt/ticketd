@@ -40,8 +40,8 @@ def build(bld):
             """.split())
 
         # Added due to El Capitan changes
-        includes.append('/usr/local/opt/openssl/include')
-        libpath.append('/usr/local/opt/openssl/lib')
+        includes.append('/usr/local/opt/openssl@1.1/include')
+        libpath.append('/usr/local/opt/openssl@1.1/lib')
 
     elif sys.platform.startswith('linux'):
         cflags.extend("""
@@ -63,6 +63,7 @@ def build(bld):
         """.split()
 
     h2o_includes = """
+        ./deps/h2o/deps/hiredis
         ./deps/h2o/include
         ./deps/picohttpparser
         ./deps/klib
