@@ -176,6 +176,7 @@ typedef struct
 
     h2o_globalconf_t cfg;
     h2o_context_t ctx;
+    h2o_accept_ctx_t accept_ctx;
 
     /* Raft isn't multi-threaded, therefore we use a global lock */
     uv_mutex_t raft_lock;
@@ -303,6 +304,7 @@ static int __http_get_id(h2o_handler_t *self, h2o_req_t *req)
         h2o_add_header(&req->pool,
                        &req->res.headers,
                        H2O_TOKEN_LOCATION,
+                       NULL,
                        leader_url,
                        strlen(leader_url));
         h2o_send(req, &body, 1, 1);
@@ -385,8 +387,12 @@ static void __on_http_connection(uv_stream_t *listener, const int status)
     if (0 != e)
         uv_fatal(e);
 
+    struct timeval connected_at = *h2o_get_timestamp(&sv->ctx, NULL, NULL);
+
     h2o_socket_t *sock = h2o_uv_socket_create((uv_stream_t*)tcp, (uv_close_cb)free);
-    h2o_http1_accept(&sv->ctx, sv->cfg.hosts, sock);
+    sv->accept_ctx.ctx = &sv->ctx;
+    sv->accept_ctx.hosts = sv->cfg.hosts;
+    h2o_http1_accept(&sv->accept_ctx, sock, connected_at);
 }
 
 /** Initiate connection if we are disconnected */
@@ -1492,7 +1498,7 @@ int main(int argc, char **argv)
                                         ANYPORT);
 
     /* HTTP route for receiving entries from clients */
-    pathconf = h2o_config_register_path(hostconf, "/");
+    pathconf = h2o_config_register_path(hostconf, "/", 0);
     h2o_chunked_register(pathconf);
     handler = h2o_create_handler(pathconf, sizeof(*handler));
     handler->on_req = __http_get_id;
