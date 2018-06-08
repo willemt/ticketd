@@ -20,6 +20,7 @@ def build(bld):
     includes = []
 
     cflags = """
+        -std=gnu99
         -Werror=int-to-pointer-cast
         -g
         -O0
