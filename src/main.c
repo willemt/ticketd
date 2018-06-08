@@ -4,6 +4,8 @@
  * found in the LICENSE file.
  */
 
+#define _GNU_SOURCE
+
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
