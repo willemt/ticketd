@@ -1,6 +1,7 @@
 language: c
 before_install:
   - sudo pip install rsttst pytest httpie
+  - sudo apt-get install -y python-simplejson
 script:
   - make libuv
   - make libh2o
